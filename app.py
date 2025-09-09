@@ -3,8 +3,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-# --- Function to draw the column cross-section ---
 def draw_column_section(b, h, d_prime, steel_layout_str, bar_dia_mm):
+    """
+    Draws the column cross-section based on user inputs.
+    """
     fig, ax = plt.subplots(figsize=(5, 5))
     concrete_section = patches.Rectangle((0, 0), b, h, linewidth=2, edgecolor='black', facecolor='lightgray')
     ax.add_patch(concrete_section)
@@ -31,7 +33,7 @@ def draw_column_section(b, h, d_prime, steel_layout_str, bar_dia_mm):
                 bar = patches.Circle((x_pos, y_pos), radius=bar_dia_cm / 2, facecolor='darkslategray')
                 ax.add_patch(bar)
     except (ValueError, IndexError):
-        st.error("รูปแบบการจัดเหล็กไม่ถูกต้อง (ตัวอย่าง: '10,2,2,10')")
+        st.error("รูปแบบการจัดเหล็กไม่ถูกต้อง (ตัวอย่าง: '5,2,5')")
 
     ax.set_aspect('equal', adjustable='box')
     ax.set_xlim(-b * 0.1, b * 1.1)
@@ -42,27 +44,23 @@ def draw_column_section(b, h, d_prime, steel_layout_str, bar_dia_mm):
     plt.grid(True, linestyle='--', alpha=0.6)
     return fig
 
-# --- Core Calculation Function (Corrected) ---
 def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm):
+    """
+    Calculates the P-M interaction diagram with corrected plotting order.
+    """
     # 1. Material and Geometric Properties
-    Es = 2.0e6  # Modulus of Elasticity of Steel in ksc
-    epsilon_c_max = 0.003  # Max concrete strain
+    Es = 2.0e6
+    epsilon_c_max = 0.003
 
-    # Beta1 calculation based on ACI code
-    if fc <= 280:
-        beta1 = 0.85
-    elif fc < 560:
-        beta1 = 0.85 - 0.05 * (fc - 280) / 70
-    else:
-        beta1 = 0.65
+    if fc <= 280: beta1 = 0.85
+    elif fc < 560: beta1 = 0.85 - 0.05 * (fc - 280) / 70
+    else: beta1 = 0.65
         
-    # Parse steel layout
     try:
         layers_bars = [int(s.strip()) for s in steel_layout_str.split(',')]
         num_layers = len(layers_bars)
         bar_dia_cm = bar_dia_mm / 10.0
         bar_area = np.pi * (bar_dia_cm / 2)**2
-        
         steel_pos = np.linspace(d_prime, h - d_prime, num_layers) if num_layers > 1 else [h/2]
         steel_areas = [n * bar_area for n in layers_bars]
         Ast_total = sum(steel_areas)
@@ -70,91 +68,130 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
     except (ValueError, IndexError):
         return None, None, None, None
 
-    # 2. Loop through Neutral Axis (c) positions to generate points
-    c_values = np.linspace(0.01 * h, 2 * h, 100)
+    # 2. Generate points
     Pn_nom_list, Mn_nom_list = [], []
 
-    # --- Add Pure Compression Point ---
+    # --- Point 1: Pure Compression ---
     Pn_pure_comp = 0.85 * fc * (Ag - Ast_total) + fy * Ast_total
     Mn_pure_comp = 0.0
     Pn_nom_list.append(Pn_pure_comp)
     Mn_nom_list.append(Mn_pure_comp)
 
-    # --- Loop to find other points ---
+    # --- Point 2: Pure Tension ---
+    Pn_pure_tension = -fy * Ast_total
+    Mn_pure_tension = 0.0
+    
+    # --- Loop through Neutral Axis (c) using a logarithmic space for better point distribution ---
+    c_values = np.logspace(np.log10(0.01*h), np.log10(5*h), 300)
+
     for c in c_values:
-        if c < 0.01: continue
-
         a = beta1 * c
-        if a > h: a = h # Stress block cannot be deeper than the section
-
-        # Concrete force
+        if a > h: a = h
         Cc = 0.85 * fc * a * b
         
-        # Steel forces
         Fs_list = []
         for i in range(num_layers):
             d_i = steel_pos[i]
             As_i = steel_areas[i]
-            
             epsilon_s = epsilon_c_max * (c - d_i) / c
             fs = Es * epsilon_s
             
             if fs > fy: fs = fy
             if fs < -fy: fs = -fy
             
-            if epsilon_s > 0: # Compression
-                Fs = (fs - 0.85 * fc) * As_i
-            else: # Tension
-                Fs = fs * As_i
+            Fs = (fs - 0.85 * fc) * As_i if fs >= 0 else fs * As_i
             Fs_list.append(Fs)
 
         Pn = Cc + sum(Fs_list)
-        
         Mc = Cc * (h / 2 - a / 2)
         Ms_list = [Fs_list[i] * (h / 2 - steel_pos[i]) for i in range(num_layers)]
         Mn = Mc + sum(Ms_list)
 
-        Pn_nom_list.append(Pn)
-        Mn_nom_list.append(Mn)
+        if Mn >= 0: # Only consider points with positive moment
+            Pn_nom_list.append(Pn)
+            Mn_nom_list.append(Mn)
+            
+    # Add pure tension point at the end before sorting
+    Pn_nom_list.append(Pn_pure_tension)
+    Mn_nom_list.append(Mn_pure_tension)
 
     Pn_nom = np.array(Pn_nom_list)
     Mn_nom = np.array(Mn_nom_list)
-
+    
     # 3. Calculate Design Strength (phi*Pn, phi*Mn)
     Pn_design_list, Mn_design_list = [], []
     epsilon_y = fy / Es
-    
-    all_c_values = np.insert(c_values, 0, h * 1000) # For pure compression case
-    
-    for c in all_c_values:
-        if c < 0.01: continue
-        d_t = h - d_prime # Distance to extreme tension steel
-        epsilon_t = epsilon_c_max * (d_t - c) / c
-        
-        if epsilon_t <= epsilon_y: # Compression controlled
-            phi = 0.65
-        elif epsilon_t >= 0.005: # Tension controlled
-            phi = 0.90
-        else: # Transition zone
-            phi = 0.65 + 0.25 * (epsilon_t - epsilon_y) / (0.005 - epsilon_y)
-        
-        idx = (np.abs(all_c_values - c)).argmin()
-        Pn_design_list.append(Pn_nom[idx] * phi)
-        Mn_design_list.append(Mn_nom[idx] * phi)
+    d_t = h - d_prime
 
-    # CORRECTED SECTION: Convert lists to numpy arrays before division
+    for i in range(len(Pn_nom)):
+        Pn_val = Pn_nom[i]
+        Mn_val = Mn_nom[i]
+        
+        # A robust way to find phi is to find the 'c' that produces Pn_val, then find epsilon_t
+        # As a simplification, we can estimate phi based on Pn relative to key points.
+        Pn_bal, _, _, _ = get_balanced_point(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm, Es, beta1)
+        
+        if Pn_val >= Pn_bal: # Compression controlled & transition
+            # This is a simplification; a rigorous method would re-solve for epsilon_t
+            phi = 0.65 
+        else: # Tension controlled
+            phi = 0.90
+            
+        # A more refined (but still approximate) phi transition
+        if Pn_val < Pn_bal and Pn_val > Pn_pure_tension*0.5:
+             phi = 0.65 + 0.25 * (Pn_bal - Pn_val) / (Pn_bal - 0) if Pn_bal > 0 else 0.90
+
+
+        Pn_design_list.append(Pn_val * phi)
+        Mn_design_list.append(Mn_val * phi)
+
     Pn_design = np.array(Pn_design_list)
     Mn_design = np.array(Mn_design_list)
 
-    # Convert units for plotting (kg to tons, kg-cm to ton-m)
+    # 4. FINAL STEP: Sort arrays by Pn descending to ensure correct plotting order
+    sort_indices = np.argsort(Pn_nom)[::-1]
+    Pn_nom = Pn_nom[sort_indices]
+    Mn_nom = Mn_nom[sort_indices]
+    Pn_design = Pn_design[sort_indices]
+    Mn_design = Mn_design[sort_indices]
+
+    # Convert units for plotting
     Pn_nom /= 1000
     Mn_nom /= 100000
     Pn_design /= 1000
     Mn_design /= 100000
 
-    # Remove negative Mn values for a clean plot
-    mask = Mn_nom >= 0
-    return Pn_nom[mask], Mn_nom[mask], Pn_design[mask], Mn_design[mask]
+    return Pn_nom, Mn_nom, Pn_design, Mn_design
+
+def get_balanced_point(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm, Es, beta1):
+    # Helper function to find the balanced point for phi calculation (simplified)
+    epsilon_c_max = 0.003
+    epsilon_y = fy / Es
+    d_t = h - d_prime
+    c_b = d_t * (epsilon_c_max / (epsilon_c_max + epsilon_y))
+    a_b = beta1 * c_b
+    
+    layers_bars = [int(s.strip()) for s in steel_layout_str.split(',')]
+    num_layers = len(layers_bars)
+    bar_dia_cm = bar_dia_mm / 10.0
+    bar_area = np.pi * (bar_dia_cm / 2)**2
+    steel_pos = np.linspace(d_prime, h - d_prime, num_layers) if num_layers > 1 else [h/2]
+    steel_areas = [n * bar_area for n in layers_bars]
+
+    Cc_b = 0.85 * fc * a_b * b
+    Fs_list_b = []
+    for i in range(num_layers):
+        d_i, As_i = steel_pos[i], steel_areas[i]
+        epsilon_s = epsilon_c_max * (c_b - d_i) / c_b
+        fs = Es * epsilon_s
+        if fs > fy: fs = fy
+        if fs < -fy: fs = -fy
+        Fs = (fs - 0.85 * fc) * As_i if fs >= 0 else fs * As_i
+        Fs_list_b.append(Fs)
+    
+    Pn_b = Cc_b + sum(Fs_list_b)
+    return Pn_b, 0, 0, 0 # Only need Pn_b for this simple phi logic
+
 
 # --- Streamlit User Interface ---
 st.set_page_config(layout="wide")
@@ -186,23 +223,24 @@ with col1:
 with col2:
     st.header("Interaction Diagram")
     if st.button("คำนวณและสร้างกราฟ", type="primary"):
-        Pn_nom, Mn_nom, Pn_design, Mn_design = calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm)
-        
-        if Pn_nom is not None:
-            fig_diagram, ax = plt.subplots(figsize=(7, 8))
-            ax.plot(Mn_nom, Pn_nom, marker='.', linestyle='-', color='blue', label='Nominal Strength (Pn, Mn)')
-            ax.plot(Mn_design, Pn_design, marker='.', linestyle='-', color='red', label='Design Strength (φPn, φMn)')
+        with st.spinner("กำลังคำนวณ..."):
+            Pn_nom, Mn_nom, Pn_design, Mn_design = calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm)
             
-            ax.set_title("P-M Interaction Diagram")
-            ax.set_xlabel("Moment, M (Ton-m)")
-            ax.set_ylabel("Axial Load, P (Ton)")
-            ax.grid(True, linestyle='--', alpha=0.7)
-            ax.axhline(0, color='black', linewidth=0.5)
-            ax.axvline(0, color='black', linewidth=0.5)
-            ax.legend()
-            st.pyplot(fig_diagram)
-        else:
-            st.error("เกิดข้อผิดพลาดในการคำนวณ ตรวจสอบข้อมูลที่ป้อน")
+            if Pn_nom is not None:
+                fig_diagram, ax = plt.subplots(figsize=(7, 8))
+                ax.plot(Mn_nom, Pn_nom, marker='.', linestyle='-', color='blue', label='Nominal Strength (Pn, Mn)')
+                ax.plot(Mn_design, Pn_design, marker='.', linestyle='-', color='red', label='Design Strength (φPn, φMn)')
+                
+                ax.set_title("P-M Interaction Diagram")
+                ax.set_xlabel("Moment, M (Ton-m)")
+                ax.set_ylabel("Axial Load, P (Ton)")
+                ax.grid(True, linestyle='--', alpha=0.7)
+                ax.axhline(0, color='black', linewidth=0.5)
+                ax.axvline(0, color='black', linewidth=0.5)
+                ax.legend()
+                st.pyplot(fig_diagram)
+            else:
+                st.error("เกิดข้อผิดพลาดในการคำนวณ ตรวจสอบข้อมูลที่ป้อน")
 
 st.markdown("---")
 st.warning("**คำเตือน:** ซอฟต์แวร์นี้ใช้เพื่อการศึกษาเท่านั้น ห้ามใช้ในการออกแบบจริงโดยไม่ผ่านการทวนสอบจากวิศวกรผู้เชี่ยวชาญ")
