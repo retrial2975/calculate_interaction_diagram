@@ -184,6 +184,10 @@ with st.sidebar:
 # --- Main App Logic ---
 steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
 bar_area = np.pi * (bar_dia_mm / 10.0 / 2)**2
+total_bars = len(steel_positions)
+Ast_total = total_bars * bar_area
+Ag_total = b_in * h_in
+rho_g = (Ast_total / Ag_total)
 
 if bending_axis == 'Y (Weak Axis)':
     calc_b, calc_h = h_in, b_in
@@ -200,6 +204,13 @@ with col1:
     st.header("หน้าตัดเสา (Visualization)")
     fig_section = draw_column_section(b_in, h_in, steel_positions, bar_dia_mm)
     st.pyplot(fig_section)
+
+    # NEW: Reinforcement Summary Section
+    st.markdown("---")
+    st.subheader("สรุปข้อมูลเหล็กเสริม")
+    st.metric(label="จำนวนเหล็กเสริมทั้งหมด", value=f"{total_bars} เส้น")
+    st.metric(label="พื้นที่หน้าตัดเหล็กทั้งหมด (Ast)", value=f"{Ast_total:.2f} ตร.ซม.")
+    st.metric(label="อัตราส่วนเหล็กเสริม (ρg)", value=f"{rho_g:.2%}")
 
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
