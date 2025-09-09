@@ -3,7 +3,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-# --- ฟังก์ชันคำนวณต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
+# --- ฟังก์ชันคำนวณต่างๆ ---
+
 def generate_steel_positions(b, h, nb, nh, d_prime):
     """สร้างตำแหน่งของเหล็กเสริมในหน้าตัด"""
     bar_positions = []
@@ -31,8 +32,8 @@ def get_layers_from_positions(steel_positions, axis):
             layers[layer_pos] = 1
     return layers
 
-def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
-    """คำนวณหาค่า Pn, Mn สำหรับ Interaction Diagram"""
+def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='Tied'):
+    """คำนวณหาค่า Pn, Mn สำหรับ Interaction Diagram พร้อมการจำกัดค่าตาม ACI"""
     Es = 2.0e6
     epsilon_c_max = 0.003
     epsilon_y = fy / Es
@@ -49,12 +50,22 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     Pn_nom_list, Mn_nom_list = [], []
     Pn_design_list, Mn_design_list = [], []
     
-    # Pure Compression Point
+    # Pure Compression Point (P0)
     Pn_pc = 0.85 * fc * (Ag - Ast_total) + fy * Ast_total
-    phi_pc = 0.65
+    
+    # คำนวณ phi และ ACI max axial load limit
+    if column_type == 'Tied':
+        phi_comp = 0.65
+        alpha = 0.80
+    else: # Spiral
+        phi_comp = 0.75
+        alpha = 0.85
+    
+    phi_Pn_max_aci = alpha * phi_comp * Pn_pc
+
     Pn_nom_list.append(Pn_pc)
     Mn_nom_list.append(0.0)
-    Pn_design_list.append(Pn_pc * phi_pc)
+    Pn_design_list.append(Pn_pc * phi_comp)
     Mn_design_list.append(0.0)
     
     # Intermediate Points
@@ -84,10 +95,16 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
         if Mn >= 0:
             epsilon_t = epsilon_c_max * (d_t - c) / c if c > 0 else float('inf')
             
-            if epsilon_t <= epsilon_y: phi = 0.65
-            elif epsilon_t >= 0.005: phi = 0.90
-            else: phi = 0.65 + 0.25 * (epsilon_t - epsilon_y) / (0.005 - epsilon_y)
-                
+            # Strength Reduction Factor (phi) variation
+            if column_type == 'Tied':
+                 if epsilon_t <= epsilon_y: phi = 0.65
+                 elif epsilon_t >= 0.005: phi = 0.90
+                 else: phi = 0.65 + 0.25 * (epsilon_t - epsilon_y) / (0.005 - epsilon_y)
+            else: # Spiral
+                 if epsilon_t <= epsilon_y: phi = 0.75
+                 elif epsilon_t >= 0.005: phi = 0.90
+                 else: phi = 0.75 + 0.15 * (epsilon_t - epsilon_y) / (0.005 - epsilon_y)
+
             Pn_nom_list.append(Pn)
             Mn_nom_list.append(Mn)
             Pn_design_list.append(Pn * phi)
@@ -104,6 +121,9 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     Pn_nom, Mn_nom = np.array(Pn_nom_list), np.array(Mn_nom_list)
     Pn_design, Mn_design = np.array(Pn_design_list), np.array(Mn_design_list)
     
+    # "ตัดยอด" กราฟ Design Strength ไม่ให้เกินลิมิตของ ACI
+    Pn_design = np.minimum(Pn_design, phi_Pn_max_aci)
+    
     sort_indices = np.argsort(Pn_nom)[::-1]
     
     # Convert units to Ton and Ton-m
@@ -111,16 +131,15 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
             Pn_design[sort_indices]/1000, Mn_design[sort_indices]/100000)
 
 # --- ฟังก์ชันวาดหน้าตัดเสาด้วย Plotly ---
+
 def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
     """วาดรูปหน้าตัดเสาด้วย Plotly"""
     fig = go.Figure()
     
-    # Concrete Section
     fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=h,
                   line=dict(color="Black", width=2), fillcolor="LightGrey",
                   layer='below')
                   
-    # Steel Bars
     bar_dia_cm = bar_dia_mm / 10.0
     bar_x = [pos[0] for pos in steel_positions]
     bar_y = [pos[1] for pos in steel_positions]
@@ -130,7 +149,6 @@ def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
         hoverinfo='none'
     ))
     
-    # Layout settings
     fig.update_layout(
         title="Column Cross-Section",
         xaxis_title="Width, b (cm)",
@@ -144,13 +162,17 @@ def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
     return fig
 
 # --- Streamlit User Interface ---
+
 st.set_page_config(layout="wide")
-st.title("🏗️ Column Interaction Diagram Generator (Interactive)")
+st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 st.write("เครื่องมือสำหรับสร้าง Interaction Diagram ของเสาคอนกรีตเสริมเหล็ก (เพื่อการศึกษาเท่านั้น)")
 
 # --- Sidebar Inputs ---
+
 with st.sidebar:
     st.header("ใส่ข้อมูลหน้าตัดเสา")
+    
+    column_type = st.radio("ประเภทของเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนที่ต้องการคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
     
     with st.expander("คุณสมบัติวัสดุ", expanded=True):
@@ -183,7 +205,6 @@ with st.sidebar:
             else:
                 column_options = sorted(df_loads['Column'].unique())
                 
-                # --- ส่วนควบคุมการเลือกเสา ---
                 st.write("**เลือกเสา:**")
                 col1, col2 = st.columns(2)
                 if col1.button("เลือกทั้งหมด", key='select_all_cols'):
@@ -197,9 +218,8 @@ with st.sidebar:
                     key='selected_columns'
                 )
 
-                # --- ส่วนควบคุมการเลือกชั้น (จะปรากฏเมื่อเลือกเสาแล้ว) ---
-                if selected_columns:
-                    filtered_df_for_stories = df_loads[df_loads['Column'].isin(selected_columns)]
+                if 'selected_columns' in st.session_state and st.session_state.selected_columns:
+                    filtered_df_for_stories = df_loads[df_loads['Column'].isin(st.session_state.selected_columns)]
                     story_options = sorted(filtered_df_for_stories['Story'].unique())
                     
                     st.write("**เลือกชั้น:**")
@@ -219,6 +239,7 @@ with st.sidebar:
             st.sidebar.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
 
 # --- Main App Logic ---
+
 steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
 bar_area = np.pi * (bar_dia_mm / 10.0 / 2)**2
 total_bars = len(steel_positions)
@@ -252,16 +273,17 @@ with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
     if st.button("คำนวณและสร้างกราฟ", type="primary"):
         with st.spinner("กำลังคำนวณ..."):
-            Pn_nom, Mn_nom, Pn_design, Mn_design = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area)
+            col_type_val = 'Tied' if column_type == 'เหล็กปลอกเดี่ยว (Tied)' else 'Spiral'
+            Pn_nom, Mn_nom, Pn_design, Mn_design = calculate_interaction_diagram(
+                fc, fy, calc_b, calc_h, layers, bar_area, column_type=col_type_val
+            )
             
             if Pn_nom is not None:
                 fig_diagram = go.Figure()
 
-                # Plot Nominal and Design Strength
                 fig_diagram.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength', line=dict(color='blue')))
                 fig_diagram.add_trace(go.Scatter(x=Mn_design, y=Pn_design, mode='lines', name='Design Strength (ΦPn, ΦMn)', line=dict(color='red')))
                 
-                # Plot Loads from CSV if available
                 if ('selected_columns' in st.session_state and 'selected_stories' in st.session_state and
                     st.session_state.selected_columns and st.session_state.selected_stories and df_loads is not None):
                     
@@ -284,7 +306,6 @@ with col2:
                             hoverinfo='x+y+text'
                         ))
 
-                # Finalize Diagram Layout
                 fig_diagram.update_layout(
                     title=f"P-M Interaction Diagram ({axis_label} Axis)",
                     xaxis_title="Moment, M (Ton-m)",
@@ -297,7 +318,6 @@ with col2:
 
                 st.plotly_chart(fig_diagram, use_container_width=True)
 
-                # Display Loads DataFrame
                 if ('selected_columns' in st.session_state and 'selected_stories' in st.session_state and
                     st.session_state.selected_columns and st.session_state.selected_stories and df_loads is not None):
                     
