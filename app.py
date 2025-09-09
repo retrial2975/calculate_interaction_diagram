@@ -42,7 +42,7 @@ def draw_column_section(b, h, d_prime, steel_layout_str, bar_dia_mm):
     plt.grid(True, linestyle='--', alpha=0.6)
     return fig
 
-# --- Core Calculation Function (Implemented) ---
+# --- Core Calculation Function (Corrected) ---
 def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm):
     # 1. Material and Geometric Properties
     Es = 2.0e6  # Modulus of Elasticity of Steel in ksc
@@ -72,13 +72,13 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
 
     # 2. Loop through Neutral Axis (c) positions to generate points
     c_values = np.linspace(0.01 * h, 2 * h, 100)
-    Pn_nom, Mn_nom = [], []
+    Pn_nom_list, Mn_nom_list = [], []
 
     # --- Add Pure Compression Point ---
     Pn_pure_comp = 0.85 * fc * (Ag - Ast_total) + fy * Ast_total
     Mn_pure_comp = 0.0
-    Pn_nom.append(Pn_pure_comp)
-    Mn_nom.append(Mn_pure_comp)
+    Pn_nom_list.append(Pn_pure_comp)
+    Mn_nom_list.append(Mn_pure_comp)
 
     # --- Loop to find other points ---
     for c in c_values:
@@ -91,55 +91,46 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
         Cc = 0.85 * fc * a * b
         
         # Steel forces
-        Fs_list, steel_strains = [], []
+        Fs_list = []
         for i in range(num_layers):
             d_i = steel_pos[i]
             As_i = steel_areas[i]
             
-            # Strain and Stress from compatibility
             epsilon_s = epsilon_c_max * (c - d_i) / c
             fs = Es * epsilon_s
             
-            # Check for yielding
             if fs > fy: fs = fy
             if fs < -fy: fs = -fy
             
-            steel_strains.append(epsilon_s)
-            
-            # Force (subtracting displaced concrete for compression steel)
             if epsilon_s > 0: # Compression
                 Fs = (fs - 0.85 * fc) * As_i
             else: # Tension
                 Fs = fs * As_i
             Fs_list.append(Fs)
 
-        # Sum forces and moments
         Pn = Cc + sum(Fs_list)
         
-        # Moments about the plastic centroid (h/2)
         Mc = Cc * (h / 2 - a / 2)
         Ms_list = [Fs_list[i] * (h / 2 - steel_pos[i]) for i in range(num_layers)]
         Mn = Mc + sum(Ms_list)
 
-        Pn_nom.append(Pn)
-        Mn_nom.append(Mn)
+        Pn_nom_list.append(Pn)
+        Mn_nom_list.append(Mn)
 
-    Pn_nom = np.array(Pn_nom)
-    Mn_nom = np.array(Mn_nom)
+    Pn_nom = np.array(Pn_nom_list)
+    Mn_nom = np.array(Mn_nom_list)
 
     # 3. Calculate Design Strength (phi*Pn, phi*Mn)
-    Pn_design, Mn_design = [], []
+    Pn_design_list, Mn_design_list = [], []
     epsilon_y = fy / Es
     
-    # Using the same c_values to recalculate strains for phi
-    c_values_for_phi = np.insert(c_values, 0, h * 1000) # Add pure compression case
+    all_c_values = np.insert(c_values, 0, h * 1000) # For pure compression case
     
-    for c in c_values_for_phi:
+    for c in all_c_values:
         if c < 0.01: continue
         d_t = h - d_prime # Distance to extreme tension steel
         epsilon_t = epsilon_c_max * (d_t - c) / c
         
-        # Determine phi based on ACI 318
         if epsilon_t <= epsilon_y: # Compression controlled
             phi = 0.65
         elif epsilon_t >= 0.005: # Tension controlled
@@ -147,10 +138,13 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
         else: # Transition zone
             phi = 0.65 + 0.25 * (epsilon_t - epsilon_y) / (0.005 - epsilon_y)
         
-        # Find corresponding nominal point (closest c)
-        idx = (np.abs(c_values_for_phi - c)).argmin()
-        Pn_design.append(Pn_nom[idx] * phi)
-        Mn_design.append(Mn_nom[idx] * phi)
+        idx = (np.abs(all_c_values - c)).argmin()
+        Pn_design_list.append(Pn_nom[idx] * phi)
+        Mn_design_list.append(Mn_nom[idx] * phi)
+
+    # CORRECTED SECTION: Convert lists to numpy arrays before division
+    Pn_design = np.array(Pn_design_list)
+    Mn_design = np.array(Mn_design_list)
 
     # Convert units for plotting (kg to tons, kg-cm to ton-m)
     Pn_nom /= 1000
@@ -161,7 +155,6 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
     # Remove negative Mn values for a clean plot
     mask = Mn_nom >= 0
     return Pn_nom[mask], Mn_nom[mask], Pn_design[mask], Mn_design[mask]
-
 
 # --- Streamlit User Interface ---
 st.set_page_config(layout="wide")
