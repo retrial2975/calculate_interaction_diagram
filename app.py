@@ -46,11 +46,12 @@ def draw_column_section(b, h, d_prime, steel_layout_str, bar_dia_mm):
 
 def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm):
     """
-    Calculates the P-M interaction diagram with corrected plotting order.
+    Calculates the P-M interaction diagram with corrected phi calculation and plotting order.
     """
     # 1. Material and Geometric Properties
     Es = 2.0e6
     epsilon_c_max = 0.003
+    epsilon_y = fy / Es
 
     if fc <= 280: beta1 = 0.85
     elif fc < 560: beta1 = 0.85 - 0.05 * (fc - 280) / 70
@@ -65,24 +66,25 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
         steel_areas = [n * bar_area for n in layers_bars]
         Ast_total = sum(steel_areas)
         Ag = b * h
+        d_t = h - d_prime # Distance to extreme tension steel
     except (ValueError, IndexError):
         return None, None, None, None
 
     # 2. Generate points
     Pn_nom_list, Mn_nom_list = [], []
+    Pn_design_list, Mn_design_list = [], []
 
-    # --- Point 1: Pure Compression ---
-    Pn_pure_comp = 0.85 * fc * (Ag - Ast_total) + fy * Ast_total
-    Mn_pure_comp = 0.0
-    Pn_nom_list.append(Pn_pure_comp)
-    Mn_nom_list.append(Mn_pure_comp)
-
-    # --- Point 2: Pure Tension ---
-    Pn_pure_tension = -fy * Ast_total
-    Mn_pure_tension = 0.0
+    # --- Add Pure Compression Point (c -> infinity) ---
+    Pn_pc = 0.85 * fc * (Ag - Ast_total) + fy * Ast_total
+    Mn_pc = 0.0
+    phi_pc = 0.65 # Pure compression is always compression controlled
+    Pn_nom_list.append(Pn_pc)
+    Mn_nom_list.append(Mn_pc)
+    Pn_design_list.append(Pn_pc * phi_pc)
+    Mn_design_list.append(Mn_pc * phi_pc)
     
-    # --- Loop through Neutral Axis (c) using a logarithmic space for better point distribution ---
-    c_values = np.logspace(np.log10(0.01*h), np.log10(5*h), 300)
+    # --- Loop through Neutral Axis (c) ---
+    c_values = np.logspace(np.log10(0.1), np.log10(h * 5), 300)
 
     for c in c_values:
         a = beta1 * c
@@ -107,48 +109,37 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
         Ms_list = [Fs_list[i] * (h / 2 - steel_pos[i]) for i in range(num_layers)]
         Mn = Mc + sum(Ms_list)
 
-        if Mn >= 0: # Only consider points with positive moment
+        if Mn >= 0:
+            # CORRECT PHI CALCULATION based on strain (epsilon_t)
+            epsilon_t = epsilon_c_max * (d_t - c) / c
+            
+            if epsilon_t <= epsilon_y: # Compression controlled
+                phi = 0.65
+            elif epsilon_t >= 0.005: # Tension controlled
+                phi = 0.90
+            else: # Transition zone
+                phi = 0.65 + 0.25 * (epsilon_t - epsilon_y) / (0.005 - epsilon_y)
+
             Pn_nom_list.append(Pn)
             Mn_nom_list.append(Mn)
+            Pn_design_list.append(Pn * phi)
+            Mn_design_list.append(Mn * phi)
             
-    # Add pure tension point at the end before sorting
-    Pn_nom_list.append(Pn_pure_tension)
-    Mn_nom_list.append(Mn_pure_tension)
+    # --- Add Pure Tension Point ---
+    Pn_pt = -fy * Ast_total
+    Mn_pt = 0.0
+    phi_pt = 0.90 # Pure tension is always tension controlled
+    Pn_nom_list.append(Pn_pt)
+    Mn_nom_list.append(Mn_pt)
+    Pn_design_list.append(Pn_pt * phi_pt)
+    Mn_design_list.append(Mn_pt * phi_pt)
 
     Pn_nom = np.array(Pn_nom_list)
     Mn_nom = np.array(Mn_nom_list)
-    
-    # 3. Calculate Design Strength (phi*Pn, phi*Mn)
-    Pn_design_list, Mn_design_list = [], []
-    epsilon_y = fy / Es
-    d_t = h - d_prime
-
-    for i in range(len(Pn_nom)):
-        Pn_val = Pn_nom[i]
-        Mn_val = Mn_nom[i]
-        
-        # A robust way to find phi is to find the 'c' that produces Pn_val, then find epsilon_t
-        # As a simplification, we can estimate phi based on Pn relative to key points.
-        Pn_bal, _, _, _ = get_balanced_point(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm, Es, beta1)
-        
-        if Pn_val >= Pn_bal: # Compression controlled & transition
-            # This is a simplification; a rigorous method would re-solve for epsilon_t
-            phi = 0.65 
-        else: # Tension controlled
-            phi = 0.90
-            
-        # A more refined (but still approximate) phi transition
-        if Pn_val < Pn_bal and Pn_val > Pn_pure_tension*0.5:
-             phi = 0.65 + 0.25 * (Pn_bal - Pn_val) / (Pn_bal - 0) if Pn_bal > 0 else 0.90
-
-
-        Pn_design_list.append(Pn_val * phi)
-        Mn_design_list.append(Mn_val * phi)
-
     Pn_design = np.array(Pn_design_list)
     Mn_design = np.array(Mn_design_list)
 
-    # 4. FINAL STEP: Sort arrays by Pn descending to ensure correct plotting order
+    # 3. FINAL STEP: Sort arrays by Pn descending to ensure correct plotting order
     sort_indices = np.argsort(Pn_nom)[::-1]
     Pn_nom = Pn_nom[sort_indices]
     Mn_nom = Mn_nom[sort_indices]
@@ -162,35 +153,6 @@ def calculate_interaction_diagram(fc, fy, b, h, d_prime, steel_layout_str, bar_d
     Mn_design /= 100000
 
     return Pn_nom, Mn_nom, Pn_design, Mn_design
-
-def get_balanced_point(fc, fy, b, h, d_prime, steel_layout_str, bar_dia_mm, Es, beta1):
-    # Helper function to find the balanced point for phi calculation (simplified)
-    epsilon_c_max = 0.003
-    epsilon_y = fy / Es
-    d_t = h - d_prime
-    c_b = d_t * (epsilon_c_max / (epsilon_c_max + epsilon_y))
-    a_b = beta1 * c_b
-    
-    layers_bars = [int(s.strip()) for s in steel_layout_str.split(',')]
-    num_layers = len(layers_bars)
-    bar_dia_cm = bar_dia_mm / 10.0
-    bar_area = np.pi * (bar_dia_cm / 2)**2
-    steel_pos = np.linspace(d_prime, h - d_prime, num_layers) if num_layers > 1 else [h/2]
-    steel_areas = [n * bar_area for n in layers_bars]
-
-    Cc_b = 0.85 * fc * a_b * b
-    Fs_list_b = []
-    for i in range(num_layers):
-        d_i, As_i = steel_pos[i], steel_areas[i]
-        epsilon_s = epsilon_c_max * (c_b - d_i) / c_b
-        fs = Es * epsilon_s
-        if fs > fy: fs = fy
-        if fs < -fy: fs = -fy
-        Fs = (fs - 0.85 * fc) * As_i if fs >= 0 else fs * As_i
-        Fs_list_b.append(Fs)
-    
-    Pn_b = Cc_b + sum(Fs_list_b)
-    return Pn_b, 0, 0, 0 # Only need Pn_b for this simple phi logic
 
 
 # --- Streamlit User Interface ---
