@@ -121,14 +121,12 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='T
     Pn_nom, Mn_nom = np.array(Pn_nom_list), np.array(Mn_nom_list)
     Pn_design, Mn_design = np.array(Pn_design_list), np.array(Mn_design_list)
     
-    # "ตัดยอด" กราฟ Design Strength ไม่ให้เกินลิมิตของ ACI
-    Pn_design = np.minimum(Pn_design, phi_Pn_max_aci)
-    
     sort_indices = np.argsort(Pn_nom)[::-1]
     
     # Convert units to Ton and Ton-m
     return (Pn_nom[sort_indices]/1000, Mn_nom[sort_indices]/100000,
-            Pn_design[sort_indices]/1000, Mn_design[sort_indices]/100000)
+            Pn_design[sort_indices]/1000, Mn_design[sort_indices]/100000,
+            phi_Pn_max_aci / 1000) # ส่งค่าลิมิต (ในหน่วย Ton) กลับไปด้วย
 
 # --- ฟังก์ชันวาดหน้าตัดเสาด้วย Plotly ---
 
@@ -274,16 +272,36 @@ with col2:
     if st.button("คำนวณและสร้างกราฟ", type="primary"):
         with st.spinner("กำลังคำนวณ..."):
             col_type_val = 'Tied' if column_type == 'เหล็กปลอกเดี่ยว (Tied)' else 'Spiral'
-            Pn_nom, Mn_nom, Pn_design, Mn_design = calculate_interaction_diagram(
+            
+            Pn_nom, Mn_nom, Pn_design, Mn_design, phi_Pn_max = calculate_interaction_diagram(
                 fc, fy, calc_b, calc_h, layers, bar_area, column_type=col_type_val
             )
             
             if Pn_nom is not None:
                 fig_diagram = go.Figure()
 
+                # Plot Nominal Strength
                 fig_diagram.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength', line=dict(color='blue')))
-                fig_diagram.add_trace(go.Scatter(x=Mn_design, y=Pn_design, mode='lines', name='Design Strength (ΦPn, ΦMn)', line=dict(color='red')))
                 
+                # Plot Theoretical Strength (uncapped) as a dashed line
+                fig_diagram.add_trace(go.Scatter(
+                    x=Mn_design, 
+                    y=Pn_design, 
+                    mode='lines', 
+                    name='Theoretical Strength (uncapped)',
+                    line=dict(color='gray', dash='dash')
+                ))
+                
+                # Plot ACI-Compliant Design Strength (capped) as a solid line
+                fig_diagram.add_trace(go.Scatter(
+                    x=Mn_design, 
+                    y=np.minimum(Pn_design, phi_Pn_max),
+                    mode='lines', 
+                    name='Design Strength (ΦPn, ΦMn)',
+                    line=dict(color='red')
+                ))
+
+                # Plot Loads from CSV if available
                 if ('selected_columns' in st.session_state and 'selected_stories' in st.session_state and
                     st.session_state.selected_columns and st.session_state.selected_stories and df_loads is not None):
                     
@@ -306,6 +324,7 @@ with col2:
                             hoverinfo='x+y+text'
                         ))
 
+                # Finalize Diagram Layout
                 fig_diagram.update_layout(
                     title=f"P-M Interaction Diagram ({axis_label} Axis)",
                     xaxis_title="Moment, M (Ton-m)",
@@ -318,6 +337,7 @@ with col2:
 
                 st.plotly_chart(fig_diagram, use_container_width=True)
 
+                # Display Loads DataFrame
                 if ('selected_columns' in st.session_state and 'selected_stories' in st.session_state and
                     st.session_state.selected_columns and st.session_state.selected_stories and df_loads is not None):
                     
