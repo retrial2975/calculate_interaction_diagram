@@ -130,18 +130,26 @@ with st.sidebar:
     st.markdown("---")
     st.header("ตรวจสอบแรงจากไฟล์ CSV")
     uploaded_file = st.file_uploader("อัปโหลดไฟล์ load_export.csv", type=["csv"])
+    
     df_loads = None
     selected_column = None
+    selected_story = None # NEW: Initialize selected_story
     if uploaded_file is not None:
         try:
             df_loads = pd.read_csv(uploaded_file)
-            required_cols = {'Column', 'P', 'M2', 'M3'}
+            required_cols = {'Story', 'Column', 'P', 'M2', 'M3'} # Add 'Story' to check
             if not required_cols.issubset(df_loads.columns):
                 st.sidebar.error(f"ไฟล์ CSV ต้องมีคอลัมน์: {', '.join(required_cols)}")
                 df_loads = None
             else:
                 column_options = sorted(df_loads['Column'].unique())
                 selected_column = st.sidebar.selectbox("เลือกหมายเลขเสาที่ต้องการตรวจสอบ:", column_options)
+                
+                # --- NEW: Story Selection Dropdown (dependent on selected_column) ---
+                if selected_column:
+                    story_options = sorted(df_loads[df_loads['Column'] == selected_column]['Story'].unique())
+                    selected_story = st.sidebar.selectbox("เลือกชั้นที่ต้องการตรวจสอบ:", story_options)
+
         except Exception as e:
             st.sidebar.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
 
@@ -179,22 +187,28 @@ with col2:
                 fig_diagram, ax = plt.subplots(figsize=(7, 8))
                 ax.plot(Mn_nom, Pn_nom, marker='.', linestyle='-', color='blue', label=f'Nominal Strength')
                 ax.plot(Mn_design, Pn_design, marker='.', linestyle='-', color='red', label=f'Design Strength')
-                if selected_column and df_loads is not None:
-                    column_data = df_loads[df_loads['Column'] == selected_column].copy()
-                    # จัดการหน่วยและเครื่องหมายให้ตรงกับกราฟ (หน่วยเป็น Ton, Ton-m อยู่แล้ว)
-                    # P: CSV เป็นลบสำหรับแรงอัด, กราฟเป็นบวก -> กลับเครื่องหมาย
-                    column_data['P_ton'] = -column_data['P']
-                    # M: ใช้ค่าสัมบูรณ์ (หน่วยเป็น Ton-m อยู่แล้ว)
-                    column_data['M2_ton_m'] = abs(column_data['M2'])
-                    column_data['M3_ton_m'] = abs(column_data['M3'])
-                    # เลือก Moment ที่จะพล็อตตามแกนที่คำนวณ
-                    # M3 -> Strong Axis (X), M2 -> Weak Axis (Y)
-                    if bending_axis.startswith('X'):
-                        plot_M = column_data['M3_ton_m']
-                    else: # Y-axis
-                        plot_M = column_data['M2_ton_m']
-                    plot_P = column_data['P_ton']
-                    ax.scatter(plot_M, plot_P, color='green', zorder=5, label=f'Loads for {selected_column}')
+                
+                # --- UPDATED: Plot load points from CSV for selected Column AND Story ---
+                if selected_column and selected_story and df_loads is not None:
+                    # Filter data for both column and story
+                    mask = (df_loads['Column'] == selected_column) & (df_loads['Story'] == selected_story)
+                    column_data = df_loads[mask].copy()
+                    
+                    if not column_data.empty:
+                        column_data['P_ton'] = -column_data['P']
+                        column_data['M2_ton_m'] = abs(column_data['M2'])
+                        column_data['M3_ton_m'] = abs(column_data['M3'])
+                        
+                        if bending_axis.startswith('X'):
+                            plot_M = column_data['M3_ton_m']
+                        else:
+                            plot_M = column_data['M2_ton_m']
+                        
+                        plot_P = column_data['P_ton']
+                        
+                        # Update the label to include the story
+                        ax.scatter(plot_M, plot_P, color='green', zorder=5, label=f'Loads for {selected_column} ({selected_story})')
+                
                 ax.set_title(f"P-M Interaction Diagram ({axis_label} Axis)")
                 ax.set_xlabel(f"Moment, M (Ton-m)")
                 ax.set_ylabel("Axial Load, P (Ton)")
@@ -203,9 +217,12 @@ with col2:
                 ax.axvline(0, color='black', linewidth=0.5)
                 ax.legend()
                 st.pyplot(fig_diagram)
-                if selected_column and df_loads is not None:
-                    st.write(f"ข้อมูลแรงสำหรับเสา **{selected_column}** (จากไฟล์ CSV)")
-                    display_df = column_data[['Story', 'Column', 'Output Case', 'P', 'M2', 'M3']].reset_index(drop=True)
+                
+                if selected_column and selected_story and df_loads is not None:
+                    # Update the title for the dataframe
+                    st.write(f"ข้อมูลแรงสำหรับเสา **{selected_column}** ที่ชั้น **{selected_story}** (จากไฟล์ CSV)")
+                    mask = (df_loads['Column'] == selected_column) & (df_loads['Story'] == selected_story)
+                    display_df = df_loads[mask][['Story', 'Column', 'Output Case', 'P', 'M2', 'M3']].reset_index(drop=True)
                     st.dataframe(display_df)
             else:
                 st.error("เกิดข้อผิดพลาดในการคำนวณ")
