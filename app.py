@@ -88,27 +88,24 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     return (Pn_nom[sort_indices]/1000, Mn_nom[sort_indices]/100000,
             Pn_design[sort_indices]/1000, Mn_design[sort_indices]/100000)
 
-# --- ฟังก์ชันวาดหน้าตัดเสาด้วย Plotly (ปรับปรุงการแสดงผลเหล็กเสริม) ---
+# --- ฟังก์ชันวาดหน้าตัดเสาด้วย Plotly ---
 def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
     fig = go.Figure()
 
-    # 1. วาดหน้าตัดคอนกรีต
+    # 1. วาดหน้าตัดคอนกรีต (เพิ่ม layer='below' เพื่อให้วาดอยู่หลังสุด)
     fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=h,
-                  line=dict(color="Black", width=2), fillcolor="LightGrey")
+                  line=dict(color="Black", width=2), fillcolor="LightGrey",
+                  layer='below') # <-- แก้ไขจุดที่ 1
 
-    # 2. วาดเหล็กเสริม (แก้ไขให้แสดงผล)
+    # 2. วาดเหล็กเสริม
+    bar_dia_cm = bar_dia_mm / 10.0
     bar_x = [pos[0] for pos in steel_positions]
     bar_y = [pos[1] for pos in steel_positions]
     
     fig.add_trace(go.Scatter(x=bar_x, y=bar_y, mode='markers',
-        marker=dict(
-            color='DarkSlateGray', 
-            size=bar_dia_mm * 0.8, # ปรับขนาด marker (เดิม bar_dia_cm * 5 อาจใหญ่ไป)
-            symbol='circle',
-            line=dict(width=1, color='Black') # เพิ่มเส้นขอบให้เหล็ก
-        ), 
-        hoverinfo='none', # ไม่ต้องแสดง tooltip สำหรับเหล็ก
-        showlegend=False # ไม่ต้องแสดงใน legend
+        marker=dict(color='DarkSlateGray', size=bar_dia_cm * 5, symbol='circle',
+                    line=dict(color='Black', width=1)), # เพิ่มเส้นขอบให้เหล็ก
+        hoverinfo='none'
     ))
     
     # 3. ตั้งค่า Layout
@@ -116,7 +113,7 @@ def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
         title="Column Cross-Section",
         xaxis_title="Width, b (cm)",
         yaxis_title="Height, h (cm)",
-        yaxis_scaleanchor="x", # ทำให้สัดส่วนแกน x และ y เท่ากัน (aspect ratio = 1)
+        yaxis_scaleanchor="x",
         xaxis_range=[-b*0.1, b*1.1],
         yaxis_range=[-h*0.1, h*1.1],
         width=500, height=500,
@@ -205,12 +202,10 @@ with col2:
                 fig_diagram = go.Figure()
 
                 fig_diagram.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength',
-                                                 line=dict(color='blue', width=2),
-                                                 hovertemplate='<b>P:</b> %{y:.2f} Ton<br><b>M:</b> %{x:.2f} Ton-m<extra></extra>'))
+                                                 line=dict(color='blue')))
                 
                 fig_diagram.add_trace(go.Scatter(x=Mn_design, y=Pn_design, mode='lines', name='Design Strength (ΦPn, ΦMn)',
-                                                 line=dict(color='red', width=2),
-                                                 hovertemplate='<b>ΦP:</b> %{y:.2f} Ton<br><b>ΦM:</b> %{x:.2f} Ton-m<extra></extra>'))
+                                                 line=dict(color='red')))
 
                 if selected_column and selected_story and df_loads is not None:
                     mask = (df_loads['Column'] == selected_column) & (df_loads['Story'] == selected_story)
@@ -222,13 +217,13 @@ with col2:
                         
                         plot_M = column_data['M3_ton_m'] if bending_axis.startswith('X') else column_data['M2_ton_m']
                         plot_P = column_data['P_ton']
-                        plot_case = column_data['Output Case'] # Output Case สำหรับ hover
+                        plot_text = column_data['Output Case']
                         
                         fig_diagram.add_trace(go.Scatter(x=plot_M, y=plot_P, mode='markers', 
                             name=f'Loads for {selected_column} ({selected_story})',
-                            marker=dict(color='green', size=10, symbol='diamond', line=dict(width=1, color='Black')),
-                            hovertemplate='<b>Output Case:</b> %{text}<br><b>P:</b> %{y:.2f} Ton<br><b>M:</b> %{x:.2f} Ton-m<extra></extra>',
-                            text=plot_case # ใช้ text attribute เพื่อส่งข้อมูล Output Case ไปแสดงใน hover
+                            marker=dict(color='green', size=8, symbol='diamond'),
+                            text=plot_text,
+                            hoverinfo='x+y+text'
                         ))
 
                 fig_diagram.update_layout(
@@ -238,16 +233,9 @@ with col2:
                     legend_title="Legend",
                     height=700
                 )
-                
-                # ปรับแต่งเส้นแกน X และ Y ที่ค่า 0 ให้ชัดเจน
-                fig_diagram.update_xaxes(
-                    zeroline=True, zerolinewidth=3, zerolinecolor='Black',
-                    showgrid=True, gridwidth=1, gridcolor='LightGray'
-                )
-                fig_diagram.update_yaxes(
-                    zeroline=True, zerolinewidth=3, zerolinecolor='Black',
-                    showgrid=True, gridwidth=1, gridcolor='LightGray'
-                )
+                # --- แก้ไขจุดที่ 2 ---
+                fig_diagram.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='White')
+                fig_diagram.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='White')
                 
                 st.plotly_chart(fig_diagram, use_container_width=True)
 
