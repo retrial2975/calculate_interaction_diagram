@@ -1,8 +1,10 @@
 import streamlit as st
 import numpy as np
+import pandas as pd  # เพิ่ม Library สำหรับจัดการ CSV
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
+# --- ฟังก์ชันต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
 def generate_steel_positions(b, h, nb, nh, d_prime):
     """
     Generates steel bar positions based on the number of bars on each face.
@@ -18,7 +20,7 @@ def generate_steel_positions(b, h, nb, nh, d_prime):
         for x in x_coords_b:
             bar_positions.append((x, d_prime)) # Bottom layer
             bar_positions.append((x, h - d_prime)) # Top layer
-        
+            
     # Side bars (excluding corners, which are already added if nb>=2)
     if nh > 2:
         y_coords_h = np.linspace(d_prime, h - d_prime, nh)[1:-1]
@@ -162,6 +164,7 @@ st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator")
 st.write("เครื่องมือสำหรับสร้าง Interaction Diagram ของเสาคอนกรีตเสริมเหล็ก (เพื่อการศึกษาเท่านั้น)")
 
+# --- Sidebar Inputs ---
 with st.sidebar:
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     bending_axis = st.radio("เลือกแกนที่ต้องการคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -180,6 +183,28 @@ with st.sidebar:
         st.markdown("**การจัดเรียงเหล็ก (รวมเหล็กมุม)**")
         nb = st.number_input("จำนวนเหล็กในด้านขนานแกน b (บน-ล่าง)", min_value=2, value=5)
         nh = st.number_input("จำนวนเหล็กในด้านขนานแกน h (ข้าง)", min_value=2, value=3)
+
+    # --- NEW: CSV Upload Section ---
+    st.markdown("---")
+    st.header("ตรวจสอบแรงจากไฟล์ CSV")
+    uploaded_file = st.file_uploader("อัปโหลดไฟล์ load_export.csv", type=["csv"])
+    
+    df_loads = None
+    selected_column = None
+    if uploaded_file is not None:
+        try:
+            df_loads = pd.read_csv(uploaded_file)
+            # ตรวจสอบคอลัมน์ที่จำเป็น
+            required_cols = {'Column', 'P', 'M2', 'M3'}
+            if not required_cols.issubset(df_loads.columns):
+                st.sidebar.error(f"ไฟล์ CSV ต้องมีคอลัมน์: {', '.join(required_cols)}")
+                df_loads = None
+            else:
+                column_options = sorted(df_loads['Column'].unique())
+                selected_column = st.sidebar.selectbox("เลือกหมายเลขเสาที่ต้องการตรวจสอบ:", column_options)
+        except Exception as e:
+            st.sidebar.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
+
 
 # --- Main App Logic ---
 steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
@@ -205,7 +230,7 @@ with col1:
     fig_section = draw_column_section(b_in, h_in, steel_positions, bar_dia_mm)
     st.pyplot(fig_section)
 
-    # NEW: Reinforcement Summary Section
+    # Reinforcement Summary Section
     st.markdown("---")
     st.subheader("สรุปข้อมูลเหล็กเสริม")
     st.metric(label="จำนวนเหล็กเสริมทั้งหมด", value=f"{total_bars} เส้น")
@@ -223,6 +248,30 @@ with col2:
                 ax.plot(Mn_nom, Pn_nom, marker='.', linestyle='-', color='blue', label=f'Nominal Strength')
                 ax.plot(Mn_design, Pn_design, marker='.', linestyle='-', color='red', label=f'Design Strength')
                 
+                # --- NEW: Plot load points from CSV ---
+                if selected_column and df_loads is not None:
+                    column_data = df_loads[df_loads['Column'] == selected_column].copy()
+                    
+                    # แปลงหน่วยและเครื่องหมายให้ตรงกับกราฟ
+                    # P: CSV เป็นลบสำหรับแรงอัด, กราฟเป็นบวก -> กลับเครื่องหมาย, แปลง kgf เป็น Ton
+                    column_data['P_ton'] = -column_data['P'] / 1000.0
+                    # M: แปลง kgf-m เป็น Ton-m และใช้ค่าสัมบูรณ์
+                    column_data['M2_ton_m'] = abs(column_data['M2'] / 1000.0)
+                    column_data['M3_ton_m'] = abs(column_data['M3'] / 1000.0)
+
+                    # เลือก Moment ที่จะพล็อตตามแกนที่คำนวณ
+                    # M3 -> Strong Axis (X), M2 -> Weak Axis (Y)
+                    if bending_axis.startswith('X'):
+                        plot_M = column_data['M3_ton_m']
+                    else: # Y-axis
+                        plot_M = column_data['M2_ton_m']
+                    
+                    plot_P = column_data['P_ton']
+                    
+                    ax.scatter(plot_M, plot_P, color='green', zorder=5, label=f'Loads for {selected_column}')
+
+                # --- End of new plotting section ---
+
                 ax.set_title(f"P-M Interaction Diagram ({axis_label} Axis)")
                 ax.set_xlabel(f"Moment, M (Ton-m)")
                 ax.set_ylabel("Axial Load, P (Ton)")
@@ -231,6 +280,13 @@ with col2:
                 ax.axvline(0, color='black', linewidth=0.5)
                 ax.legend()
                 st.pyplot(fig_diagram)
+
+                # --- NEW: Display DataFrame of the selected column ---
+                if selected_column and df_loads is not None:
+                    st.write(f"ข้อมูลแรงสำหรับเสา **{selected_column}** (จากไฟล์ CSV)")
+                    display_df = column_data[['Story', 'Column', 'Output Case', 'P', 'M2', 'M3']].reset_index(drop=True)
+                    st.dataframe(display_df)
+
             else:
                 st.error("เกิดข้อผิดพลาดในการคำนวณ")
 
