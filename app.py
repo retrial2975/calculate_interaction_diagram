@@ -1,10 +1,9 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import plotly.graph_objects as go # เปลี่ยนจาก matplotlib มาใช้ Plotly
 
-# --- ฟังก์ชันต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
+# --- ฟังก์ชันคำนวณต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
 def generate_steel_positions(b, h, nb, nh, d_prime):
     bar_positions = []
     if nb > 0:
@@ -29,23 +28,6 @@ def get_layers_from_positions(steel_positions, axis):
         else:
             layers[layer_pos] = 1
     return layers
-
-def draw_column_section(b, h, steel_positions, bar_dia_mm):
-    fig, ax = plt.subplots(figsize=(5, 5))
-    concrete_section = patches.Rectangle((0, 0), b, h, linewidth=2, edgecolor='black', facecolor='lightgray')
-    ax.add_patch(concrete_section)
-    bar_dia_cm = bar_dia_mm / 10.0
-    for x, y in steel_positions:
-        bar = patches.Circle((x, y), radius=bar_dia_cm / 2, facecolor='darkslategray')
-        ax.add_patch(bar)
-    ax.set_aspect('equal', adjustable='box')
-    ax.set_xlim(-b * 0.1, b * 1.1)
-    ax.set_ylim(-h * 0.1, h * 1.1)
-    ax.set_xlabel("Width, b (cm)")
-    ax.set_ylabel("Height, h (cm)")
-    plt.title("Column Cross-Section")
-    plt.grid(True, linestyle='--', alpha=0.6)
-    return fig
 
 def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     Es = 2.0e6
@@ -106,9 +88,40 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     return (Pn_nom[sort_indices]/1000, Mn_nom[sort_indices]/100000,
             Pn_design[sort_indices]/1000, Mn_design[sort_indices]/100000)
 
+# --- NEW: ฟังก์ชันวาดหน้าตัดเสาด้วย Plotly ---
+def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
+    fig = go.Figure()
+
+    # 1. วาดหน้าตัดคอนกรีต
+    fig.add_shape(type="rect", x0=0, y0=0, x1=b, y1=h,
+                  line=dict(color="Black", width=2), fillcolor="LightGrey")
+
+    # 2. วาดเหล็กเสริม
+    bar_dia_cm = bar_dia_mm / 10.0
+    bar_x = [pos[0] for pos in steel_positions]
+    bar_y = [pos[1] for pos in steel_positions]
+    
+    fig.add_trace(go.Scatter(x=bar_x, y=bar_y, mode='markers',
+        marker=dict(color='DarkSlateGray', size=bar_dia_cm * 5, symbol='circle'), # ปรับขนาด marker
+        hoverinfo='none' # ไม่ต้องแสดง tooltip สำหรับเหล็ก
+    ))
+    
+    # 3. ตั้งค่า Layout
+    fig.update_layout(
+        title="Column Cross-Section",
+        xaxis_title="Width, b (cm)",
+        yaxis_title="Height, h (cm)",
+        yaxis_scaleanchor="x", # ทำให้สัดส่วนแกน x และ y เท่ากัน (aspect ratio = 1)
+        xaxis_range=[-b*0.1, b*1.1],
+        yaxis_range=[-h*0.1, h*1.1],
+        width=500, height=500,
+        showlegend=False
+    )
+    return fig
+
 # --- Streamlit User Interface ---
 st.set_page_config(layout="wide")
-st.title("🏗️ Column Interaction Diagram Generator")
+st.title("🏗️ Column Interaction Diagram Generator (Interactive)")
 st.write("เครื่องมือสำหรับสร้าง Interaction Diagram ของเสาคอนกรีตเสริมเหล็ก (เพื่อการศึกษาเท่านั้น)")
 
 # --- Sidebar Inputs ---
@@ -133,23 +146,20 @@ with st.sidebar:
     
     df_loads = None
     selected_column = None
-    selected_story = None # NEW: Initialize selected_story
+    selected_story = None
     if uploaded_file is not None:
         try:
             df_loads = pd.read_csv(uploaded_file)
-            required_cols = {'Story', 'Column', 'P', 'M2', 'M3'} # Add 'Story' to check
+            required_cols = {'Story', 'Column', 'P', 'M2', 'M3'}
             if not required_cols.issubset(df_loads.columns):
                 st.sidebar.error(f"ไฟล์ CSV ต้องมีคอลัมน์: {', '.join(required_cols)}")
                 df_loads = None
             else:
                 column_options = sorted(df_loads['Column'].unique())
                 selected_column = st.sidebar.selectbox("เลือกหมายเลขเสาที่ต้องการตรวจสอบ:", column_options)
-                
-                # --- NEW: Story Selection Dropdown (dependent on selected_column) ---
                 if selected_column:
                     story_options = sorted(df_loads[df_loads['Column'] == selected_column]['Story'].unique())
                     selected_story = st.sidebar.selectbox("เลือกชั้นที่ต้องการตรวจสอบ:", story_options)
-
         except Exception as e:
             st.sidebar.error(f"เกิดข้อผิดพลาดในการอ่านไฟล์: {e}")
 
@@ -168,58 +178,71 @@ else:
     calc_b, calc_h = b_in, h_in
     axis_label = "X (Strong)"
     layers = get_layers_from_positions(steel_positions, 'X')
+
 col1, col2 = st.columns([0.8, 1.2])
 with col1:
     st.header("หน้าตัดเสา (Visualization)")
-    fig_section = draw_column_section(b_in, h_in, steel_positions, bar_dia_mm)
-    st.pyplot(fig_section)
+    # ใช้ฟังก์ชันใหม่ของ Plotly
+    fig_section = draw_column_section_plotly(b_in, h_in, steel_positions, bar_dia_mm)
+    st.plotly_chart(fig_section, use_container_width=True)
+
     st.markdown("---")
     st.subheader("สรุปข้อมูลเหล็กเสริม")
     st.metric(label="จำนวนเหล็กเสริมทั้งหมด", value=f"{total_bars} เส้น")
     st.metric(label="พื้นที่หน้าตัดเหล็กทั้งหมด (Ast)", value=f"{Ast_total:.2f} ตร.ซม.")
     st.metric(label="อัตราส่วนเหล็กเสริม (ρg)", value=f"{rho_g:.2%}")
+
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
     if st.button("คำนวณและสร้างกราฟ", type="primary"):
         with st.spinner("กำลังคำนวณ..."):
             Pn_nom, Mn_nom, Pn_design, Mn_design = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area)
             if Pn_nom is not None:
-                fig_diagram, ax = plt.subplots(figsize=(7, 8))
-                ax.plot(Mn_nom, Pn_nom, marker='.', linestyle='-', color='blue', label=f'Nominal Strength')
-                ax.plot(Mn_design, Pn_design, marker='.', linestyle='-', color='red', label=f'Design Strength')
+                # --- NEW: สร้างกราฟ Interaction Diagram ด้วย Plotly ---
+                fig_diagram = go.Figure()
+
+                # Add Nominal Strength trace
+                fig_diagram.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength',
+                                                 line=dict(color='blue')))
                 
-                # --- UPDATED: Plot load points from CSV for selected Column AND Story ---
+                # Add Design Strength trace
+                fig_diagram.add_trace(go.Scatter(x=Mn_design, y=Pn_design, mode='lines', name='Design Strength (ΦPn, ΦMn)',
+                                                 line=dict(color='red')))
+
+                # Plot load points from CSV
                 if selected_column and selected_story and df_loads is not None:
-                    # Filter data for both column and story
                     mask = (df_loads['Column'] == selected_column) & (df_loads['Story'] == selected_story)
                     column_data = df_loads[mask].copy()
-                    
                     if not column_data.empty:
                         column_data['P_ton'] = -column_data['P']
                         column_data['M2_ton_m'] = abs(column_data['M2'])
                         column_data['M3_ton_m'] = abs(column_data['M3'])
                         
-                        if bending_axis.startswith('X'):
-                            plot_M = column_data['M3_ton_m']
-                        else:
-                            plot_M = column_data['M2_ton_m']
-                        
+                        plot_M = column_data['M3_ton_m'] if bending_axis.startswith('X') else column_data['M2_ton_m']
                         plot_P = column_data['P_ton']
+                        plot_text = column_data['Output Case'] # ข้อความที่จะแสดงเมื่อ Hover
                         
-                        # Update the label to include the story
-                        ax.scatter(plot_M, plot_P, color='green', zorder=5, label=f'Loads for {selected_column} ({selected_story})')
+                        fig_diagram.add_trace(go.Scatter(x=plot_M, y=plot_P, mode='markers', 
+                            name=f'Loads for {selected_column} ({selected_story})',
+                            marker=dict(color='green', size=8, symbol='diamond'),
+                            text=plot_text, # กำหนดข้อความ hover
+                            hoverinfo='x+y+text'
+                        ))
+
+                # Update layout
+                fig_diagram.update_layout(
+                    title=f"P-M Interaction Diagram ({axis_label} Axis)",
+                    xaxis_title="Moment, M (Ton-m)",
+                    yaxis_title="Axial Load, P (Ton)",
+                    legend_title="Legend",
+                    height=700
+                )
+                fig_diagram.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='Black')
+                fig_diagram.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='Black')
                 
-                ax.set_title(f"P-M Interaction Diagram ({axis_label} Axis)")
-                ax.set_xlabel(f"Moment, M (Ton-m)")
-                ax.set_ylabel("Axial Load, P (Ton)")
-                ax.grid(True, linestyle='--', alpha=0.7)
-                ax.axhline(0, color='black', linewidth=0.5)
-                ax.axvline(0, color='black', linewidth=0.5)
-                ax.legend()
-                st.pyplot(fig_diagram)
-                
+                st.plotly_chart(fig_diagram, use_container_width=True)
+
                 if selected_column and selected_story and df_loads is not None:
-                    # Update the title for the dataframe
                     st.write(f"ข้อมูลแรงสำหรับเสา **{selected_column}** ที่ชั้น **{selected_story}** (จากไฟล์ CSV)")
                     mask = (df_loads['Column'] == selected_column) & (df_loads['Story'] == selected_story)
                     display_df = df_loads[mask][['Story', 'Column', 'Output Case', 'P', 'M2', 'M3']].reset_index(drop=True)
