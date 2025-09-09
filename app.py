@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-def generate_steel_positions(b, h, nb, nh, d_prime, bar_dia_mm):
+def generate_steel_positions(b, h, nb, nh, d_prime):
     """
     Generates steel bar positions based on the number of bars on each face.
     nb: number of bars on face parallel to b-axis (top/bottom)
@@ -13,19 +13,20 @@ def generate_steel_positions(b, h, nb, nh, d_prime, bar_dia_mm):
     bar_positions = []
     
     # Top and bottom bars
-    x_coords_b = np.linspace(d_prime, b - d_prime, nb)
-    for x in x_coords_b:
-        bar_positions.append((x, d_prime)) # Bottom layer
-        bar_positions.append((x, h - d_prime)) # Top layer
+    if nb > 0:
+        x_coords_b = np.linspace(d_prime, b - d_prime, nb)
+        for x in x_coords_b:
+            bar_positions.append((x, d_prime)) # Bottom layer
+            bar_positions.append((x, h - d_prime)) # Top layer
         
-    # Side bars (excluding corners, which are already added)
+    # Side bars (excluding corners, which are already added if nb>=2)
     if nh > 2:
         y_coords_h = np.linspace(d_prime, h - d_prime, nh)[1:-1]
         for y in y_coords_h:
             bar_positions.append((d_prime, y)) # Left side
             bar_positions.append((b - d_prime, y)) # Right side
             
-    # Remove duplicate coordinates (corners) and return
+    # Remove duplicate coordinates and return
     return sorted(list(set(bar_positions)))
 
 def get_layers_from_positions(steel_positions, axis):
@@ -69,7 +70,7 @@ def draw_column_section(b, h, steel_positions, bar_dia_mm):
 
 def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     """
-    Main calculation function. It's now independent of how steel was defined.
+    Main calculation function with corrected moment calculation to prevent loop-back.
     'layers' is a dictionary {position: num_bars}
     """
     Es = 2.0e6
@@ -84,28 +85,34 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
     steel_areas = [layers[pos] * bar_area for pos in steel_pos]
     Ast_total = sum(steel_areas)
     Ag = b * h
-    d_t = max(steel_pos)
+    d_t = max(steel_pos) # Position of extreme tension steel
 
     Pn_nom_list, Mn_nom_list = [], []
     Pn_design_list, Mn_design_list = [], []
 
-    # --- Pure Compression ---
+    # --- Add Pure Compression Point (c -> infinity) ---
     Pn_pc = 0.85 * fc * (Ag - Ast_total) + fy * Ast_total
-    phi_pc = 0.65
+    phi_pc = 0.65 
     Pn_nom_list.append(Pn_pc)
     Mn_nom_list.append(0.0)
     Pn_design_list.append(Pn_pc * phi_pc)
     Mn_design_list.append(0.0)
     
-    # --- Loop through Neutral Axis (c) ---
-    c_values = np.logspace(np.log10(0.1), np.log10(h * 5), 300)
+    # --- Loop through Neutral Axis (c), extending to small c for high tension ---
+    c_values = np.logspace(np.log10(0.01), np.log10(h * 5), 300)
 
     for c in c_values:
         a = beta1 * c
         if a > h: a = h
-        Cc = 0.85 * fc * a * b
         
-        Fs_list = []
+        # Concrete force and moment
+        Cc = 0.85 * fc * a * b
+        Mc = Cc * (h / 2.0 - a / 2.0)
+        
+        # Steel forces and moments
+        Pn_s = 0.0 # Sum of steel forces
+        Mn_s = 0.0 # Sum of steel moments
+
         for i, d_i in enumerate(steel_pos):
             As_i = steel_areas[i]
             epsilon_s = epsilon_c_max * (c - d_i) / c
@@ -114,16 +121,15 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
             if fs > fy: fs = fy
             if fs < -fy: fs = -fy
             
-            Fs = (fs - 0.85 * fc) * As_i if fs >= 0 else fs * As_i
-            Fs_list.append(Fs)
+            force = (fs - 0.85 * fc) * As_i if fs >= 0 else fs * As_i
+            Pn_s += force
+            Mn_s += force * (h / 2.0 - d_i)
 
-        Pn = Cc + sum(Fs_list)
-        Mc = Cc * (h / 2 - a / 2)
-        Ms_list = [Fs_list[i] * (h / 2 - d_i) for i in range(len(steel_pos))]
-        Mn = Mc + sum(Ms_list)
+        Pn = Cc + Pn_s
+        Mn = Mc + Mn_s
 
         if Mn >= 0:
-            epsilon_t = epsilon_c_max * (d_t - c) / c
+            epsilon_t = epsilon_c_max * (d_t - c) / c if c > 0 else float('inf')
             
             if epsilon_t <= epsilon_y: phi = 0.65
             elif epsilon_t >= 0.005: phi = 0.90
@@ -134,7 +140,7 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area):
             Pn_design_list.append(Pn * phi)
             Mn_design_list.append(Mn * phi)
             
-    # --- Pure Tension ---
+    # --- Add Pure Tension Point ---
     Pn_pt = -fy * Ast_total
     phi_pt = 0.90
     Pn_nom_list.append(Pn_pt)
@@ -176,7 +182,7 @@ with st.sidebar:
         nh = st.number_input("จำนวนเหล็กในด้านขนานแกน h (ข้าง)", min_value=2, value=3)
 
 # --- Main App Logic ---
-steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime, bar_dia_mm)
+steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
 bar_area = np.pi * (bar_dia_mm / 10.0 / 2)**2
 
 if bending_axis == 'Y (Weak Axis)':
