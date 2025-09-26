@@ -3,23 +3,19 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-# --- ฟังก์ชันคำนวณต่างๆ ---
+# --- ฟังก์ชันคำนวณต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
 
 def generate_steel_positions(b, h, nb, nh, d_prime):
-    """สร้างตำแหน่งของเหล็กเสริมในหน้าตัด"""
     bar_positions = []
     if nb > 0:
         x_coords_b = np.linspace(d_prime, b - d_prime, nb)
-        for x in x_coords_b:
-            bar_positions.extend([(x, d_prime), (x, h - d_prime)])
+        for x in x_coords_b: bar_positions.extend([(x, d_prime), (x, h - d_prime)])
     if nh > 2:
         y_coords_h = np.linspace(d_prime, h - d_prime, nh)[1:-1]
-        for y in y_coords_h:
-            bar_positions.extend([(d_prime, y), (b - d_prime, y)])
+        for y in y_coords_h: bar_positions.extend([(d_prime, y), (b - d_prime, y)])
     return sorted(list(set(bar_positions)))
 
 def get_layers_from_positions(steel_positions, axis):
-    """จัดกลุ่มเหล็กเสริมตามเลเยอร์สำหรับการคำนวณ"""
     layers, coord_index = {}, 1 if axis == 'X' else 0
     for pos in steel_positions:
         layer_pos = pos[coord_index]
@@ -27,7 +23,6 @@ def get_layers_from_positions(steel_positions, axis):
     return layers
 
 def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='Tied'):
-    """คำนวณหาค่า Pn, Mn สำหรับ Interaction Diagram พร้อมการจำกัดค่าตาม ACI"""
     Es, epsilon_c_max = 2.0e6, 0.003
     epsilon_y = fy / Es
     beta1 = np.interp(fc, [0, 280, 560, np.inf], [0.85, 0.85, 0.65, 0.65])
@@ -214,36 +209,32 @@ with col2:
             column_data['Mu_ton_m'] = abs(column_data[M_col])
             
             # --- คำนวณค่าต่างๆ ---
-            if check_slenderness or check_min_moment:
-                # คำนวณ Mc ถ้าจำเป็น
-                if check_slenderness and story_lu_editor is not None:
-                    story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
-                    column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
-                    column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
-                    grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
-                    if auto_calculate_cm:
-                        cm_series = column_data.groupby(grouping_keys).apply(calculate_cm_for_group, M_col).rename('Cm')
-                        column_data = pd.merge(column_data, cm_series, on=grouping_keys, how='left')
-                    else:
-                        column_data['Cm'] = Cm_factor_manual
-                    results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
-                    column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
+            # กำหนดค่าเริ่มต้นให้ Mc เท่ากับ Mu
+            column_data['Mc_ton_m'] = column_data['Mu_ton_m']
+
+            if check_slenderness and story_lu_editor is not None:
+                story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
+                column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
+                column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
+                grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
+                if auto_calculate_cm:
+                    cm_series = column_data.groupby(grouping_keys).apply(calculate_cm_for_group, M_col).rename('Cm')
+                    column_data = pd.merge(column_data, cm_series, on=grouping_keys, how='left')
                 else:
-                    column_data['Mc_ton_m'] = column_data['Mu_ton_m']
-                
-                # คำนวณ M_design โดยเริ่มจาก Mc
-                column_data['M_design_ton_m'] = column_data['Mc_ton_m']
-                if check_min_moment:
-                    column_data['M_min_ton_m'] = column_data.apply(lambda row: calculate_minimum_moment(row['P_ton'], calc_h), axis=1)
-                    column_data['M_design_ton_m'] = column_data[['Mc_ton_m', 'M_min_ton_m']].max(axis=1)
+                    column_data['Cm'] = Cm_factor_manual
+                results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
+                column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
+            
+            # คำนวณ M_design โดยเริ่มจาก Mc (ซึ่งอาจจะเท่ากับ Mu หรือเป็นค่าที่ขยายแล้ว)
+            column_data['M_design_ton_m'] = column_data['Mc_ton_m']
+            if check_min_moment:
+                column_data['M_min_ton_m'] = column_data.apply(lambda row: calculate_minimum_moment(row['P_ton'], calc_h), axis=1)
+                column_data['M_design_ton_m'] = column_data[['Mc_ton_m', 'M_min_ton_m']].max(axis=1)
 
             # --- จัดการข้อมูลสำหรับพล็อตและตาราง ---
-            # <<<---!!! จุดที่แก้ไข 2: เพิ่ม Station เข้าไปใน hover text ของกราฟ !!!--->>>
             hover_text_original = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' Case:'+column_data['Output Case']
             fig.add_trace(go.Scatter(x=column_data['Mu_ton_m'], y=column_data['P_ton'], mode='markers', name='Original Loads (All Stations)', marker=dict(color='green', size=8, opacity=0.5), text=hover_text_original, hoverinfo='x+y+text'))
             
-            # <<<---!!! จุดที่แก้ไข 3: แก้ไข Bug การพล็อต !!!--->>>
-            # Final Design Loads (สีม่วง) จะถูกพล็อตก็ต่อเมื่อมีการติ๊กเลือก check_slenderness หรือ check_min_moment
             if check_slenderness or check_min_moment:
                 final_moment_col_name = 'M_design_ton_m'
                 hover_text_final = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' M_final='+column_data[final_moment_col_name].round(2).astype(str)
@@ -260,17 +251,23 @@ with col2:
                     st.dataframe(failing_loads[['Story', 'Column', 'Output Case', 'delta_ns']].round(2))
 
     fig.update_layout(height=700, xaxis_title="Moment, M (Ton-m)", yaxis_title="Axial Load, P (Ton)", legend=dict(y=0.99, x=0.99))
-    fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
-    fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
+    fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray'); fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
     st.plotly_chart(fig, use_container_width=True)
 
     if df_loads is not None and 'summary_data' in locals() and not summary_data.empty:
         st.write("ข้อมูลสรุปสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
-        display_data = summary_data.copy()
-        # <<<---!!! จุดที่แก้ไข 1: เพิ่ม Station เข้าไปในตารางสรุป !!!--->>>
+        summary_data = summary_data.copy()
+        
+        # <<<---!!! จุดที่แก้ไข: ปรับปรุง Logic การเลือกคอลัมน์แสดงผล !!!--->>>
         display_cols = ['Story', 'Column', 'Unique Name', 'Station', 'Output Case', 'P', M_col, 'Mu_ton_m']
         
-        if 'Mc_ton_m' in display_data.columns: display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
-        if 'M_min_ton_m' in display_data.columns: display_cols.extend(['M_min_ton_m', 'M_design_ton_m'])
+        if check_slenderness:
+             display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
+        if check_min_moment:
+             # เพิ่ม M_min และ M_design ถ้ายังไม่มีใน list
+             if 'M_min_ton_m' not in display_cols: display_cols.append('M_min_ton_m')
+             if 'M_design_ton_m' not in display_cols: display_cols.append('M_design_ton_m')
         
-        st.dataframe(display_data[display_cols].reset_index(drop=True).round(2))
+        # กรองให้เหลือเฉพาะคอลัมน์ที่มีอยู่จริงใน DataFrame ก่อนแสดงผล
+        final_display_cols = [col for col in display_cols if col in summary_data.columns]
+        st.dataframe(summary_data[final_display_cols].reset_index(drop=True).round(2))
