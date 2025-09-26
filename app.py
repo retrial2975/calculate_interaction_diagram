@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-# --- ฟังก์ชันคำนวณต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
+# --- ฟังก์ชันคำนวณต่างๆ ---
 def generate_steel_positions(b, h, nb, nh, d_prime):
     bar_positions = []
     if nb > 0:
@@ -104,10 +104,7 @@ with st.sidebar:
     st.markdown("---")
     with st.expander("ข้อมูลความชะลูด & การออกแบบ", expanded=False):
         check_slenderness = st.checkbox("พิจารณาผลของความชะลูด (Slenderness)"); k_factor = st.number_input("k-factor", value=1.0, disabled=not check_slenderness)
-        
-        # <<<---!!! จุดที่แก้ไข 3: เพิ่มคำอธิบาย (help) ให้กับ beta_d !!!--->>>
         beta_d = st.number_input("βd", value=0.6, disabled=not check_slenderness, help="อัตราส่วนแรงกระทำคงที่ต่อแรงทั้งหมด เพื่อใช้คำนวณผลของ Creep (โดยทั่วไปประมาณ 0.6)")
-        
         auto_calculate_cm = st.checkbox("คำนวณ Cm Factor อัตโนมัติ", value=True, disabled=not check_slenderness)
         if not auto_calculate_cm:
             Cm_factor_manual = st.number_input("Cm Factor (Manual)", value=1.0, disabled=not check_slenderness)
@@ -135,11 +132,8 @@ with st.sidebar:
                     if s2.button("ยกเลิกทั้งหมด", key='cs'): st.session_state.selected_stories = []
                     selected_stories = st.multiselect("เลือกชั้น:", story_options, key='selected_stories')
         except Exception as e: st.sidebar.error(f"เกิดข้อผิดพลาด: {e}")
-
     if check_slenderness and 'selected_stories' in st.session_state and st.session_state.selected_stories:
         st.markdown("**กรอกความสูงแต่ละชั้น (Lu):**")
-        
-        # <<<---!!! จุดที่แก้ไข 1: เพิ่มช่องกรอก Lu รวมและปุ่ม Apply !!!--->>>
         sc1, sc2 = st.columns([0.6, 0.4])
         with sc1:
             master_lu = st.number_input("ใส่ค่า Lu ทั้งหมด (m)", value=3.0, key="master_lu_input", label_visibility="collapsed")
@@ -147,7 +141,6 @@ with st.sidebar:
             if st.button("ใช้ค่านี้กับทุกชั้น"):
                 if st.session_state.story_lu_df is not None:
                     st.session_state.story_lu_df['Lu (m)'] = st.session_state.master_lu_input
-
         if st.session_state.story_lu_df is None or set(st.session_state.story_lu_df['Story'].astype(str)) != set([str(s) for s in st.session_state.selected_stories]):
             story_lu_data = {'Story': sorted(st.session_state.selected_stories), 'Lu (m)': [3.0] * len(st.session_state.selected_stories)}
             st.session_state.story_lu_df = pd.DataFrame(story_lu_data)
@@ -166,8 +159,24 @@ with col1:
     st.metric("จำนวนเหล็กเสริมทั้งหมด", f"{len(steel_positions)} เส้น"); st.metric("พื้นที่เหล็ก (Ast)", f"{Ast_total:.2f} ตร.ซม."); st.metric("อัตราส่วนเหล็กเสริม (ρg)", f"{Ast_total / (b_in*h_in):.2%}")
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
+    
+    # <<<---!!! จุดที่แก้ไข: นำเนื้อหาสูตรทั้งหมดกลับมาใส่ให้ครบถ้วน (ตรวจสอบแล้ว) !!!--->>>
     with st.expander("แสดง/ซ่อนสูตรการคำนวณ"):
-        st.markdown(r"""...สูตรทั้งหมด...""") # (เหมือนเดิม)
+        st.markdown(r"""
+        #### 1. Effective Flexural Stiffness ($EI_{eff}$)
+        $$ EI_{eff} = \frac{0.4 \cdot E_c \cdot I_g}{1 + \beta_d} $$
+        #### 2. Euler's Buckling Load ($P_c$)
+        $$ P_c = \frac{\pi^2 \cdot EI_{eff}}{(k \cdot L_u)^2} $$
+        #### 3. Equivalent Moment Factor ($C_m$)
+        $$ C_m = 0.6 + 0.4 \frac{M_1}{M_2} \quad (0.4 \le C_m \le 1.0) $$
+        #### 4. Moment Magnifier ($\delta_{ns}$)
+        $$ \delta_{ns} = \frac{C_m}{1 - \frac{P_u}{0.75 \cdot P_c}} \geq 1.0 $$
+        #### 5. Magnified Moment ($M_c$)
+        $$ M_c = \delta_{ns} \cdot M_u $$
+        #### 6. Minimum Moment ($M_{min}$)
+        $$ M_{min} = P_u \cdot (1.5 + 0.03h) $$
+        """)
+
     Pn_nom, Mn_nom, Pn_design, Mn_design, phi_Pn_max = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area, 'Tied' if 'Tied' in column_type else 'Spiral')
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength', line=dict(color='blue', dash='dash')))
