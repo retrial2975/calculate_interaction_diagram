@@ -197,8 +197,26 @@ with col1:
 
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
+    
+    # <<<---!!! จุดที่แก้ไข: นำเนื้อหาสูตรกลับมาใส่ !!!--->>>
     with st.expander("แสดง/ซ่อนสูตรการคำนวณความชะลูด"):
-        st.markdown(r"""...สูตรต่างๆ...""")
+        st.markdown(r"""
+        #### 1. Effective Flexural Stiffness ($EI_{eff}$)
+        คำนวณเพื่อหาค่าความแข็งแกร่งของเสาโดยพิจารณาผลของคอนกรีตแตกร้าวและการคลืบ (Creep)
+        $$ EI_{eff} = \frac{0.4 \cdot E_c \cdot I_g}{1 + \beta_d} $$
+        
+        #### 2. Euler's Buckling Load ($P_c$)
+        แรงอัดวิกฤตที่ทำให้เสาโก่งเดาะในทางทฤษฎี
+        $$ P_c = \frac{\pi^2 \cdot EI_{eff}}{(k \cdot L_u)^2} $$
+        
+        #### 3. Moment Magnifier ($\delta_{ns}$)
+        ตัวคูณขยายโมเมนต์สำหรับโครงที่ไม่มีการเซ (Non-sway)
+        $$ \delta_{ns} = \frac{C_m}{1 - \frac{P_u}{0.75 \cdot P_c}} \geq 1.0 $$
+        
+        #### 4. Magnified Moment ($M_c$)
+        โมเมนต์ดัดที่ถูกขยายค่าขึ้นเนื่องจากผลของความชะลูด
+        $$ M_c = \delta_{ns} \cdot M_u $$
+        """)
 
     Pn_nom, Mn_nom, Pn_design, Mn_design, phi_Pn_max = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area, 'Tied' if 'Tied' in column_type else 'Spiral')
     fig = go.Figure()
@@ -231,7 +249,6 @@ with col2:
             idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
             plot_data = column_data.loc[idx]
 
-            # <<<---!!! จุดที่แก้ไข !!!--->>>
             fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_data['Output Case'], hoverinfo='x+y+text'))
             
             if check_slenderness and 'Mc_ton_m' in plot_data.columns:
@@ -249,7 +266,7 @@ with col2:
 
     if df_loads is not None and 'plot_data' in locals() and not plot_data.empty:
         st.write("ข้อมูลแรงสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
-        display_data = plot_data
+        display_data = plot_data.copy() # ใช้ .copy() เพื่อป้องกัน SettingWithCopyWarning
         display_cols = ['Story', 'Column', 'Unique Name', 'Output Case', 'P', M_col]
         if check_slenderness and 'Mc_ton_m' in display_data.columns:
             display_data.loc[:, f'{M_col}_magnified'] = display_data['Mc_ton_m']
