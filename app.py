@@ -55,7 +55,6 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='T
         for i, d_i in enumerate(steel_pos):
             epsilon_s = epsilon_c_max * (c - d_i) / c
             fs = np.clip(Es * epsilon_s, -fy, fy)
-            # แก้ไขการคำนวณแรงในเหล็กให้แม่นยำขึ้น
             force = fs * steel_areas[i] - (0.85 * fc * steel_areas[i] if fs >= 0 else 0)
             Pn_s += force
             Mn_s += force * (h / 2.0 - d_i)
@@ -121,6 +120,7 @@ st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 
 with st.sidebar:
+    # ... (ส่วน UI ทั้งหมดเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -214,17 +214,12 @@ with col2:
             column_data['P_ton'] = -column_data['P']
             column_data['Mu_ton_m'] = abs(column_data[M_col])
             
-            # ใช้ข้อมูลเฉพาะที่ปลายเสา (max station) สำหรับพล็อตกราฟและแสดงผล
-            idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
-            plot_data = column_data.loc[idx]
-            fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_data['Output Case'], hoverinfo='x+y+text'))
-
+            # <<<---!!! จุดที่แก้ไข 1: ย้ายการคำนวณทั้งหมดมาก่อน แล้วค่อยหา idx ทีหลัง !!!--->>>
             if check_slenderness and story_lu_editor is not None:
                 story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
                 column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
                 column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
                 
-                # <<<---!!! จุดที่แก้ไข: เปลี่ยนมาใช้ apply + merge !!!--->>>
                 grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
                 if auto_calculate_cm:
                     cm_series = column_data.groupby(grouping_keys).apply(calculate_cm_for_group, M_col).rename('Cm')
@@ -234,10 +229,16 @@ with col2:
 
                 results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], abs(row[M_col]), row['Pc_ton'], row['Cm']), axis=1)
                 column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
-                
-                plot_data = column_data.loc[idx]
-                fig.add_trace(go.Scatter(x=plot_data['Mc_ton_m'], y=plot_data['P_ton'], mode='markers', name='Magnified Loads', marker=dict(color='purple', size=10, symbol='x'), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' δns='+plot_data['delta_ns'].round(2).astype(str), hoverinfo='x+y+text'))
+            
+            # <<<---!!! จุดที่แก้ไข 2: หา idx หลังจากจัดการข้อมูลทั้งหมดเสร็จแล้ว !!!--->>>
+            idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
+            plot_data = column_data.loc[idx]
 
+            # พล็อตกราฟโดยใช้ plot_data ที่สมบูรณ์แล้ว
+            fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_gata['Output Case'], hoverinfo='x+y+text'))
+            if check_slenderness and 'Mc_ton_m' in plot_data.columns:
+                fig.add_trace(go.Scatter(x=plot_data['Mc_ton_m'], y=plot_data['P_ton'], mode='markers', name='Magnified Loads', marker=dict(color='purple', size=10, symbol='x'), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' δns='+plot_data['delta_ns'].round(2).astype(str), hoverinfo='x+y+text'))
+                
                 failing_loads = plot_data[plot_data['delta_ns'] > 1.4]
                 if not failing_loads.empty:
                     st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} รายการที่ Delta_ns > 1.4")
@@ -250,8 +251,7 @@ with col2:
 
     if df_loads is not None and 'plot_data' in locals() and not plot_data.empty:
         st.write("ข้อมูลแรงสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
-        # สร้าง Dataframe สำหรับแสดงผลจากข้อมูลที่คำนวณครบถ้วนแล้ว
-        display_data = column_data.loc[idx].copy()
+        display_data = plot_data
         display_cols = ['Story', 'Column', 'Unique Name', 'Output Case', 'P', M_col]
         if check_slenderness and 'Mc_ton_m' in display_data.columns:
             display_data[f'{M_col}_magnified'] = display_data['Mc_ton_m']
