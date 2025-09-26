@@ -3,19 +3,23 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-# --- ฟังก์ชันคำนวณต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
+# --- ฟังก์ชันคำนวณต่างๆ ---
 
 def generate_steel_positions(b, h, nb, nh, d_prime):
+    """สร้างตำแหน่งของเหล็กเสริมในหน้าตัด"""
     bar_positions = []
     if nb > 0:
         x_coords_b = np.linspace(d_prime, b - d_prime, nb)
-        for x in x_coords_b: bar_positions.extend([(x, d_prime), (x, h - d_prime)])
+        for x in x_coords_b:
+            bar_positions.extend([(x, d_prime), (x, h - d_prime)])
     if nh > 2:
         y_coords_h = np.linspace(d_prime, h - d_prime, nh)[1:-1]
-        for y in y_coords_h: bar_positions.extend([(d_prime, y), (b - d_prime, y)])
+        for y in y_coords_h:
+            bar_positions.extend([(d_prime, y), (b - d_prime, y)])
     return sorted(list(set(bar_positions)))
 
 def get_layers_from_positions(steel_positions, axis):
+    """จัดกลุ่มเหล็กเสริมตามเลเยอร์สำหรับการคำนวณ"""
     layers, coord_index = {}, 1 if axis == 'X' else 0
     for pos in steel_positions:
         layer_pos = pos[coord_index]
@@ -23,6 +27,7 @@ def get_layers_from_positions(steel_positions, axis):
     return layers
 
 def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='Tied'):
+    """คำนวณหาค่า Pn, Mn สำหรับ Interaction Diagram พร้อมการจำกัดค่าตาม ACI"""
     Es, epsilon_c_max = 2.0e6, 0.003
     epsilon_y = fy / Es
     beta1 = np.interp(fc, [0, 280, 560, np.inf], [0.85, 0.85, 0.65, 0.65])
@@ -86,7 +91,7 @@ def calculate_euler_load(fc, b, h, beta_d, k, Lu_m):
     return (np.pi**2 * EI_eff) / (k * Lu_cm)**2 / 1000
 
 def get_magnified_moment_and_delta(Pu_ton, Mu_ton, Pc_ton, Cm):
-    if Pu_ton <= 0 or Pc_ton <= 0: return Mu_ton, 1.0
+    if Pu_ton <= 0 or Pc_ton <= 0 or pd.isna(Pc_ton) or pd.isna(Cm): return Mu_ton, 1.0
     denominator = 1 - (abs(Pu_ton) / (0.75 * Pc_ton))
     if denominator <= 0: return float('inf'), float('inf')
     delta_ns = max(1.0, Cm / denominator)
@@ -121,7 +126,6 @@ st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 
 with st.sidebar:
-    # ... (ส่วน UI ทั้งหมดเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -195,6 +199,36 @@ with col1:
 
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
+    
+    # <<<---!!! จุดที่แก้ไข 3: นำเนื้อหาสูตรทั้งหมดกลับมา !!!--->>>
+    with st.expander("แสดง/ซ่อนสูตรการคำนวณ"):
+        st.markdown(r"""
+        #### 1. Effective Flexural Stiffness ($EI_{eff}$)
+        คำนวณความแข็งแกร่งของเสาโดยพิจารณาผลของคอนกรีตแตกร้าวและการคลืบ (Creep)
+        $$ EI_{eff} = \frac{0.4 \cdot E_c \cdot I_g}{1 + \beta_d} $$
+        
+        #### 2. Euler's Buckling Load ($P_c$)
+        แรงอัดวิกฤตที่ทำให้เสาโก่งเดาะในทางทฤษฎี
+        $$ P_c = \frac{\pi^2 \cdot EI_{eff}}{(k \cdot L_u)^2} $$
+        
+        #### 3. Equivalent Moment Factor ($C_m$)
+        แฟกเตอร์ปรับแก้โมเมนต์ตามลักษณะการดัดตัวของเสา
+        $$ C_m = 0.6 + 0.4 \frac{M_1}{M_2} \quad (0.4 \le C_m \le 1.0) $$
+        - $M_1$ คือโมเมนต์ค่าน้อยที่ปลายเสา, $M_2$ คือโมเมนต์ค่ามาก (อัตราส่วน $M_1/M_2$ เป็นลบถ้าดัดโค้งสองทาง)
+        
+        #### 4. Moment Magnifier ($\delta_{ns}$)
+        ตัวคูณขยายโมเมนต์สำหรับโครงที่ไม่มีการเซ (Non-sway)
+        $$ \delta_{ns} = \frac{C_m}{1 - \frac{P_u}{0.75 \cdot P_c}} \geq 1.0 $$
+        
+        #### 5. Magnified Moment ($M_c$)
+        โมเมนต์ดัดที่ถูกขยายค่าขึ้นเนื่องจากผลของความชะลูด
+        $$ M_c = \delta_{ns} \cdot M_u $$
+
+        #### 6. Minimum Moment ($M_{min}$)
+        โมเมนต์ขั้นต่ำที่เกิดจากการเยื้องศูนย์โดยบังเอิญ
+        $$ M_{min} = P_u \cdot (1.5 + 0.03h) $$
+        """)
+
     Pn_nom, Mn_nom, Pn_design, Mn_design, phi_Pn_max = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area, 'Tied' if 'Tied' in column_type else 'Spiral')
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength', line=dict(color='blue', dash='dash')))
@@ -209,12 +243,12 @@ with col2:
             column_data['Mu_ton_m'] = abs(column_data[M_col])
             
             # --- คำนวณค่าต่างๆ ---
-            # กำหนดค่าเริ่มต้นให้ Mc เท่ากับ Mu
             column_data['Mc_ton_m'] = column_data['Mu_ton_m']
-
             if check_slenderness and story_lu_editor is not None:
-                story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
-                column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
+                # <<<---!!! จุดที่แก้ไข 2: แก้ไข Bug ค่าว่างโดยใช้ merge !!!--->>>
+                lu_df = story_lu_editor.rename(columns={'Lu (m)': 'Lu_m'})
+                column_data = pd.merge(column_data, lu_df, on='Story', how='left')
+
                 column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
                 grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
                 if auto_calculate_cm:
@@ -225,7 +259,6 @@ with col2:
                 results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
                 column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
             
-            # คำนวณ M_design โดยเริ่มจาก Mc (ซึ่งอาจจะเท่ากับ Mu หรือเป็นค่าที่ขยายแล้ว)
             column_data['M_design_ton_m'] = column_data['Mc_ton_m']
             if check_min_moment:
                 column_data['M_min_ton_m'] = column_data.apply(lambda row: calculate_minimum_moment(row['P_ton'], calc_h), axis=1)
@@ -240,10 +273,9 @@ with col2:
                 hover_text_final = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' M_final='+column_data[final_moment_col_name].round(2).astype(str)
                 fig.add_trace(go.Scatter(x=column_data[final_moment_col_name], y=column_data['P_ton'], mode='markers', name='Final Design Loads (All Stations)', marker=dict(color='purple', size=8, symbol='x', opacity=0.5), text=hover_text_final, hoverinfo='x+y+text'))
             
-            # สร้างข้อมูลสำหรับสรุป (ตาราง, warning) โดยใช้เฉพาะปลายบน
+            # สร้างข้อมูลสำหรับ warning โดยใช้เฉพาะปลายบน
             idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
             summary_data = column_data.loc[idx]
-
             if check_slenderness and 'delta_ns' in summary_data.columns:
                 failing_loads = summary_data[summary_data['delta_ns'] > 1.4]
                 if not failing_loads.empty:
@@ -254,20 +286,17 @@ with col2:
     fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray'); fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
     st.plotly_chart(fig, use_container_width=True)
 
-    if df_loads is not None and 'summary_data' in locals() and not summary_data.empty:
-        st.write("ข้อมูลสรุปสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
-        summary_data = summary_data.copy()
-        
-        # <<<---!!! จุดที่แก้ไข: ปรับปรุง Logic การเลือกคอลัมน์แสดงผล !!!--->>>
+    if df_loads is not None and not column_data.empty:
+        # <<<---!!! จุดที่แก้ไข 1: แสดงผลจาก column_data ทั้งหมด !!!--->>>
+        st.write("ข้อมูลแรงสำหรับเสาที่เลือก (แสดงทุก Station)")
+        display_data = column_data.copy()
         display_cols = ['Story', 'Column', 'Unique Name', 'Station', 'Output Case', 'P', M_col, 'Mu_ton_m']
         
         if check_slenderness:
              display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
         if check_min_moment:
-             # เพิ่ม M_min และ M_design ถ้ายังไม่มีใน list
              if 'M_min_ton_m' not in display_cols: display_cols.append('M_min_ton_m')
              if 'M_design_ton_m' not in display_cols: display_cols.append('M_design_ton_m')
         
-        # กรองให้เหลือเฉพาะคอลัมน์ที่มีอยู่จริงใน DataFrame ก่อนแสดงผล
-        final_display_cols = [col for col in display_cols if col in summary_data.columns]
-        st.dataframe(summary_data[final_display_cols].reset_index(drop=True).round(2))
+        final_display_cols = [col for col in display_cols if col in display_data.columns]
+        st.dataframe(display_data[final_display_cols].reset_index(drop=True).round(2))
