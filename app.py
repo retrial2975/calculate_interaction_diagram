@@ -126,10 +126,10 @@ st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 
 with st.sidebar:
+    # ... (ส่วน UI ทั้งหมดเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
-    
     with st.expander("คุณสมบัติวัสดุ", expanded=True):
         fc = st.number_input("fc' (ksc)", value=280.0, min_value=1.0)
         fy = st.number_input("fy (ksc)", value=4000.0, min_value=1.0)
@@ -141,7 +141,6 @@ with st.sidebar:
         bar_dia_mm = st.selectbox("ขนาดเหล็กเสริม", [12, 16, 20, 25, 28, 32], index=3)
         nb = st.number_input("จำนวนเหล็กด้าน b (บน-ล่าง)", value=5, min_value=2)
         nh = st.number_input("จำนวนเหล็กด้าน h (ข้าง)", value=3, min_value=2)
-
     st.markdown("---")
     with st.expander("ข้อมูลความชะลูด & การออกแบบ", expanded=False):
         check_slenderness = st.checkbox("พิจารณาผลของความชะลูด (Slenderness)")
@@ -151,7 +150,6 @@ with st.sidebar:
         if not auto_calculate_cm:
             Cm_factor_manual = st.number_input("Cm Factor (Manual)", value=1.0, disabled=not check_slenderness)
         check_min_moment = st.checkbox("พิจารณา Minimum Moment ตาม ACI", value=True)
-
     st.markdown("---"); st.header("ตรวจสอบแรงจากไฟล์ CSV")
     uploaded_file = st.file_uploader("อัปโหลดไฟล์ CSV", type=["csv"])
     if 'selected_columns' not in st.session_state: st.session_state.selected_columns = []
@@ -169,14 +167,12 @@ with st.sidebar:
                 if c1.button("เลือกทั้งหมด", key='sc'): st.session_state.selected_columns = column_options
                 if c2.button("ยกเลิกทั้งหมด", key='cc'): st.session_state.selected_columns = []
                 selected_columns = st.multiselect("เลือกหมายเลขเสา:", column_options, key='selected_columns')
-
                 if selected_columns:
                     story_options = sorted(df_loads[df_loads['Column'].isin(selected_columns)]['Story'].unique())
                     st.write("**เลือกชั้น:**"); s1, s2 = st.columns(2)
                     if s1.button("เลือกทั้งหมด", key='ss'): st.session_state.selected_stories = story_options
                     if s2.button("ยกเลิกทั้งหมด", key='cs'): st.session_state.selected_stories = []
                     selected_stories = st.multiselect("เลือกชั้น:", story_options, key='selected_stories')
-
                     if selected_stories and check_slenderness:
                         st.markdown("**กรอกความสูงแต่ละชั้น (Lu):**")
                         story_lu_df = pd.DataFrame({'Story': sorted(selected_stories), 'Lu (m)': [3.0] * len(selected_stories)})
@@ -217,35 +213,43 @@ with col2:
             column_data['P_ton'] = -column_data['P']
             column_data['Mu_ton_m'] = abs(column_data[M_col])
             
-            column_data['Mc_ton_m'] = column_data['Mu_ton_m'] # Default value if slenderness is not checked
-
-            if check_slenderness and story_lu_editor is not None:
-                story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
-                column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
-                column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
-                
-                grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
-                if auto_calculate_cm:
-                    cm_series = column_data.groupby(grouping_keys).apply(calculate_cm_for_group, M_col).rename('Cm')
-                    column_data = pd.merge(column_data, cm_series, on=grouping_keys, how='left')
+            # --- คำนวณค่าต่างๆ ---
+            if check_slenderness or check_min_moment:
+                # คำนวณ Mc ถ้าจำเป็น
+                if check_slenderness and story_lu_editor is not None:
+                    story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
+                    column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
+                    column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
+                    grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
+                    if auto_calculate_cm:
+                        cm_series = column_data.groupby(grouping_keys).apply(calculate_cm_for_group, M_col).rename('Cm')
+                        column_data = pd.merge(column_data, cm_series, on=grouping_keys, how='left')
+                    else:
+                        column_data['Cm'] = Cm_factor_manual
+                    results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
+                    column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
                 else:
-                    column_data['Cm'] = Cm_factor_manual
+                    column_data['Mc_ton_m'] = column_data['Mu_ton_m']
+                
+                # คำนวณ M_design โดยเริ่มจาก Mc
+                column_data['M_design_ton_m'] = column_data['Mc_ton_m']
+                if check_min_moment:
+                    column_data['M_min_ton_m'] = column_data.apply(lambda row: calculate_minimum_moment(row['P_ton'], calc_h), axis=1)
+                    column_data['M_design_ton_m'] = column_data[['Mc_ton_m', 'M_min_ton_m']].max(axis=1)
 
-                results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
-                column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
+            # --- จัดการข้อมูลสำหรับพล็อตและตาราง ---
+            # <<<---!!! จุดที่แก้ไข 2: เพิ่ม Station เข้าไปใน hover text ของกราฟ !!!--->>>
+            hover_text_original = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' Case:'+column_data['Output Case']
+            fig.add_trace(go.Scatter(x=column_data['Mu_ton_m'], y=column_data['P_ton'], mode='markers', name='Original Loads (All Stations)', marker=dict(color='green', size=8, opacity=0.5), text=hover_text_original, hoverinfo='x+y+text'))
             
-            column_data['M_design_ton_m'] = column_data['Mc_ton_m']
-            if check_min_moment:
-                column_data['M_min_ton_m'] = column_data.apply(lambda row: calculate_minimum_moment(row['P_ton'], calc_h), axis=1)
-                column_data['M_design_ton_m'] = column_data[['Mc_ton_m', 'M_min_ton_m']].max(axis=1)
-
-            # <<<---!!! จุดที่แก้ไข 1: พล็อตจาก column_data ทั้งหมด ไม่ใช่แค่ plot_data !!!--->>>
-            fig.add_trace(go.Scatter(x=column_data['Mu_ton_m'], y=column_data['P_ton'], mode='markers', name='Original Loads (All Stations)', marker=dict(color='green', size=8, opacity=0.5), text='C:'+column_data['Column']+' S:'+column_data['Story']+' Case:'+column_data['Output Case'], hoverinfo='x+y+text'))
+            # <<<---!!! จุดที่แก้ไข 3: แก้ไข Bug การพล็อต !!!--->>>
+            # Final Design Loads (สีม่วง) จะถูกพล็อตก็ต่อเมื่อมีการติ๊กเลือก check_slenderness หรือ check_min_moment
+            if check_slenderness or check_min_moment:
+                final_moment_col_name = 'M_design_ton_m'
+                hover_text_final = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' M_final='+column_data[final_moment_col_name].round(2).astype(str)
+                fig.add_trace(go.Scatter(x=column_data[final_moment_col_name], y=column_data['P_ton'], mode='markers', name='Final Design Loads (All Stations)', marker=dict(color='purple', size=8, symbol='x', opacity=0.5), text=hover_text_final, hoverinfo='x+y+text'))
             
-            final_moment_col_name = 'M_design_ton_m'
-            fig.add_trace(go.Scatter(x=column_data[final_moment_col_name], y=column_data['P_ton'], mode='markers', name='Final Design Loads (All Stations)', marker=dict(color='purple', size=8, symbol='x', opacity=0.5), text='C:'+column_data['Column']+' S:'+column_data['Story']+' M_final='+column_data[final_moment_col_name].round(2).astype(str), hoverinfo='x+y+text'))
-            
-            # --- สร้างข้อมูลสำหรับสรุป (ตาราง, warning) โดยใช้เฉพาะปลายบน ---
+            # สร้างข้อมูลสำหรับสรุป (ตาราง, warning) โดยใช้เฉพาะปลายบน
             idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
             summary_data = column_data.loc[idx]
 
@@ -263,7 +267,8 @@ with col2:
     if df_loads is not None and 'summary_data' in locals() and not summary_data.empty:
         st.write("ข้อมูลสรุปสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
         display_data = summary_data.copy()
-        display_cols = ['Story', 'Column', 'Unique Name', 'Output Case', 'P', M_col, 'Mu_ton_m']
+        # <<<---!!! จุดที่แก้ไข 1: เพิ่ม Station เข้าไปในตารางสรุป !!!--->>>
+        display_cols = ['Story', 'Column', 'Unique Name', 'Station', 'Output Case', 'P', M_col, 'Mu_ton_m']
         
         if 'Mc_ton_m' in display_data.columns: display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
         if 'M_min_ton_m' in display_data.columns: display_cols.extend(['M_min_ton_m', 'M_design_ton_m'])
