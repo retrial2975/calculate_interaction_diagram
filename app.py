@@ -3,24 +3,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-# --- ฟังก์ชันคำนวณต่างๆ ---
-# ... (ฟังก์ชันส่วนใหญ่เหมือนเดิม) ...
-
-def get_magnified_moment_and_delta(Pu_ton, Mu_ton, Pc_ton, Cm):
-    """คำนวณ Mc และ delta_ns และจัดการกรณีเกิดการโก่งเดาะ"""
-    if Pu_ton <= 0 or pd.isna(Pc_ton) or pd.isna(Cm): 
-        return Mu_ton, 1.0
-    
-    # <<<---!!! จุดที่แก้ไข: จัดการกรณีเกิด Failure !!!--->>>
-    denominator = 1 - (abs(Pu_ton) / (0.75 * Pc_ton))
-    if denominator <= 0: 
-        # คืนค่า 999 เพื่อเป็นสัญลักษณ์ว่าเกิดการวิบัติ
-        return 999.0, 999.0
-    
-    delta_ns = max(1.0, Cm / denominator)
-    return delta_ns * Mu_ton, delta_ns
-
-# ... (ฟังก์ชันอื่นๆ เหมือนเดิม) ...
+# --- ฟังก์ชันคำนวณต่างๆ (ไม่มีการเปลี่ยนแปลง) ---
 def generate_steel_positions(b, h, nb, nh, d_prime):
     bar_positions = []
     if nb > 0:
@@ -86,6 +69,12 @@ def calculate_euler_load(fc, b, h, beta_d, k, Lu_m):
     Lu_cm = Lu_m * 100
     if (k * Lu_cm) == 0: return float('inf')
     return (np.pi**2 * EI_eff) / (k * Lu_cm)**2 / 1000
+def get_magnified_moment_and_delta(Pu_ton, Mu_ton, Pc_ton, Cm):
+    if Pu_ton <= 0 or pd.isna(Pc_ton) or pd.isna(Cm): return Mu_ton, 1.0
+    denominator = 1 - (abs(Pu_ton) / (0.75 * Pc_ton))
+    if denominator <= 0: return 999.0, 999.0
+    delta_ns = max(1.0, Cm / denominator)
+    return delta_ns * Mu_ton, delta_ns
 def calculate_cm_for_group(group, moment_col):
     if len(group) < 2: return 1.0
     top_moment = group.loc[group['Station'].idxmax()][moment_col]
@@ -111,9 +100,8 @@ def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
 # --- Streamlit User Interface ---
 st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
-
 with st.sidebar:
-    # ... (ส่วน UI เหมือนเดิม) ...
+    # ... (ส่วน UI ทั้งหมดเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -163,7 +151,7 @@ with st.sidebar:
 
     if check_slenderness and 'selected_stories' in st.session_state and st.session_state.selected_stories:
         st.markdown("**กรอกความสูงแต่ละชั้น (Lu):**")
-        if st.session_state.story_lu_df is None or set(st.session_state.story_lu_df['Story']) != set(st.session_state.selected_stories):
+        if st.session_state.story_lu_df is None or set(st.session_state.story_lu_df['Story'].astype(str)) != set(st.session_state.selected_stories):
             story_lu_data = {'Story': sorted(st.session_state.selected_stories), 'Lu (m)': [3.0] * len(st.session_state.selected_stories)}
             st.session_state.story_lu_df = pd.DataFrame(story_lu_data)
         st.session_state.story_lu_df = st.data_editor(st.session_state.story_lu_df, use_container_width=True, hide_index=True, key='lu_editor')
@@ -233,21 +221,20 @@ with col2:
                 hover_text_final = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' M_final='+column_data[final_moment_col_name].round(2).astype(str)
                 fig.add_trace(go.Scatter(x=column_data[final_moment_col_name], y=column_data['P_ton'], mode='markers', name='Final Design Loads (All Stations)', marker=dict(color='purple', size=8, symbol='x', opacity=0.5), text=hover_text_final, hoverinfo='x+y+text'))
             
-            # <<<---!!! จุดที่แก้ไข: เพิ่มคำเตือน Failure แบบใหม่ !!!--->>>
-            idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
-            summary_data = column_data.loc[idx]
-            if check_slenderness and 'delta_ns' in summary_data.columns:
-                failing_loads = summary_data[summary_data['delta_ns'] > 1.4]
+            # <<<---!!! จุดที่แก้ไข: ตรวจสอบ Warning จาก column_data ทั้งหมด !!!--->>>
+            if check_slenderness and 'delta_ns' in column_data.columns:
+                failing_loads = column_data[column_data['delta_ns'] > 1.4].copy() # ใช้ .copy() เพื่อความปลอดภัย
+                
                 if not failing_loads.empty:
-                    # ตรวจสอบว่ามีรายการที่เกิด Failure จริงๆ หรือไม่
                     instability_failures = failing_loads[failing_loads['delta_ns'] >= 999]
                     
-                    st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} รายการที่ Delta_ns > 1.4 (ที่ปลายบน)")
+                    st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} ตำแหน่ง (Station) ที่ Delta_ns > 1.4")
                     
                     if not instability_failures.empty:
-                        st.error(f"🚨 **พบ {len(instability_failures)} รายการที่เกิดการวิบัติจากการโก่งเดาะ (Pu ≥ 0.75Pc)** ซึ่งแสดงค่า Delta ns เป็น 999.00")
+                        st.error(f"🚨 **พบ {len(instability_failures)} ตำแหน่งที่เกิดการวิบัติจากการโก่งเดาะ (Pu ≥ 0.75Pc)**")
                     
-                    st.dataframe(failing_loads[['Story', 'Column', 'Output Case', 'delta_ns']].round(2))
+                    # แสดงผลตาราง warning โดยเรียงลำดับเพื่อให้ดูง่าย
+                    st.dataframe(failing_loads[['Story', 'Column', 'Unique Name', 'Station', 'Output Case', 'delta_ns']].sort_values(by=['Story', 'Column', 'Output Case', 'Station']).round(2))
 
     fig.update_layout(height=700, xaxis_title="Moment, M (Ton-m)", yaxis_title="Axial Load, P (Ton)", legend=dict(y=0.99, x=0.99))
     fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray'); fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
