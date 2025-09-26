@@ -101,7 +101,6 @@ def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
 st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 with st.sidebar:
-    # ... (ส่วน UI ทั้งหมดเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -148,16 +147,14 @@ with st.sidebar:
                     if s2.button("ยกเลิกทั้งหมด", key='cs'): st.session_state.selected_stories = []
                     selected_stories = st.multiselect("เลือกชั้น:", story_options, key='selected_stories')
         except Exception as e: st.sidebar.error(f"เกิดข้อผิดพลาด: {e}")
-
     if check_slenderness and 'selected_stories' in st.session_state and st.session_state.selected_stories:
         st.markdown("**กรอกความสูงแต่ละชั้น (Lu):**")
-        if st.session_state.story_lu_df is None or set(st.session_state.story_lu_df['Story'].astype(str)) != set(st.session_state.selected_stories):
+        if st.session_state.story_lu_df is None or set(st.session_state.story_lu_df['Story'].astype(str)) != set([str(s) for s in st.session_state.selected_stories]):
             story_lu_data = {'Story': sorted(st.session_state.selected_stories), 'Lu (m)': [3.0] * len(st.session_state.selected_stories)}
             st.session_state.story_lu_df = pd.DataFrame(story_lu_data)
         st.session_state.story_lu_df = st.data_editor(st.session_state.story_lu_df, use_container_width=True, hide_index=True, key='lu_editor')
 
 # --- Main App Logic ---
-# ... (ส่วนเตรียมข้อมูลเหมือนเดิม) ...
 steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
 bar_area = np.pi * (bar_dia_mm / 10.0 / 2)**2
 Ast_total = len(steel_positions) * bar_area
@@ -167,7 +164,6 @@ if bending_axis == 'Y (Weak Axis)':
 else:
     calc_b, calc_h, axis_label, M_col = b_in, h_in, "X (Strong)", "M3"
     layers = get_layers_from_positions(steel_positions, 'X')
-
 col1, col2 = st.columns([0.8, 1.2])
 with col1:
     st.header("หน้าตัดเสา"); st.plotly_chart(draw_column_section_plotly(b_in, h_in, steel_positions, bar_dia_mm), use_container_width=True)
@@ -175,11 +171,25 @@ with col1:
     st.metric("จำนวนเหล็กเสริมทั้งหมด", f"{len(steel_positions)} เส้น")
     st.metric("พื้นที่เหล็ก (Ast)", f"{Ast_total:.2f} ตร.ซม.")
     st.metric("อัตราส่วนเหล็กเสริม (ρg)", f"{Ast_total / (b_in*h_in):.2%}")
-
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
+    
+    # <<<---!!! จุดที่แก้ไข: นำเนื้อหาสูตรทั้งหมดกลับมาใส่ให้ครบถ้วน !!!--->>>
     with st.expander("แสดง/ซ่อนสูตรการคำนวณ"):
-        st.markdown(r"""...สูตรทั้งหมด...""") # (เหมือนเดิม)
+        st.markdown(r"""
+        #### 1. Effective Flexural Stiffness ($EI_{eff}$)
+        $$ EI_{eff} = \frac{0.4 \cdot E_c \cdot I_g}{1 + \beta_d} $$
+        #### 2. Euler's Buckling Load ($P_c$)
+        $$ P_c = \frac{\pi^2 \cdot EI_{eff}}{(k \cdot L_u)^2} $$
+        #### 3. Equivalent Moment Factor ($C_m$)
+        $$ C_m = 0.6 + 0.4 \frac{M_1}{M_2} \quad (0.4 \le C_m \le 1.0) $$
+        #### 4. Moment Magnifier ($\delta_{ns}$)
+        $$ \delta_{ns} = \frac{C_m}{1 - \frac{P_u}{0.75 \cdot P_c}} \geq 1.0 $$
+        #### 5. Magnified Moment ($M_c$)
+        $$ M_c = \delta_{ns} \cdot M_u $$
+        #### 6. Minimum Moment ($M_{min}$)
+        $$ M_{min} = P_u \cdot (1.5 + 0.03h) $$
+        """)
 
     Pn_nom, Mn_nom, Pn_design, Mn_design, phi_Pn_max = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area, 'Tied' if 'Tied' in column_type else 'Spiral')
     fig = go.Figure()
@@ -221,20 +231,16 @@ with col2:
                 hover_text_final = 'C:'+column_data['Column']+' S:'+column_data['Story']+' Sta:'+column_data['Station'].round(2).astype(str)+' M_final='+column_data[final_moment_col_name].round(2).astype(str)
                 fig.add_trace(go.Scatter(x=column_data[final_moment_col_name], y=column_data['P_ton'], mode='markers', name='Final Design Loads (All Stations)', marker=dict(color='purple', size=8, symbol='x', opacity=0.5), text=hover_text_final, hoverinfo='x+y+text'))
             
-            # <<<---!!! จุดที่แก้ไข: ตรวจสอบ Warning จาก column_data ทั้งหมด !!!--->>>
-            if check_slenderness and 'delta_ns' in column_data.columns:
-                failing_loads = column_data[column_data['delta_ns'] > 1.4].copy() # ใช้ .copy() เพื่อความปลอดภัย
-                
+            idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
+            summary_data = column_data.loc[idx]
+            if check_slenderness and 'delta_ns' in summary_data.columns:
+                failing_loads = summary_data[summary_data['delta_ns'] > 1.4]
                 if not failing_loads.empty:
                     instability_failures = failing_loads[failing_loads['delta_ns'] >= 999]
-                    
-                    st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} ตำแหน่ง (Station) ที่ Delta_ns > 1.4")
-                    
+                    st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} รายการที่ Delta_ns > 1.4 (ที่ปลายบน)")
                     if not instability_failures.empty:
-                        st.error(f"🚨 **พบ {len(instability_failures)} ตำแหน่งที่เกิดการวิบัติจากการโก่งเดาะ (Pu ≥ 0.75Pc)**")
-                    
-                    # แสดงผลตาราง warning โดยเรียงลำดับเพื่อให้ดูง่าย
-                    st.dataframe(failing_loads[['Story', 'Column', 'Unique Name', 'Station', 'Output Case', 'delta_ns']].sort_values(by=['Story', 'Column', 'Output Case', 'Station']).round(2))
+                        st.error(f"🚨 **พบ {len(instability_failures)} รายการที่เกิดการวิบัติจากการโก่งเดาะ (Pu ≥ 0.75Pc)**")
+                    st.dataframe(failing_loads[['Story', 'Column', 'Output Case', 'delta_ns']].round(2))
 
     fig.update_layout(height=700, xaxis_title="Moment, M (Ton-m)", yaxis_title="Axial Load, P (Ton)", legend=dict(y=0.99, x=0.99))
     fig.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray'); fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
