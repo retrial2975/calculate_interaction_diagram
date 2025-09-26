@@ -6,16 +6,20 @@ import plotly.graph_objects as go
 # --- ฟังก์ชันคำนวณต่างๆ ---
 
 def generate_steel_positions(b, h, nb, nh, d_prime):
+    """สร้างตำแหน่งของเหล็กเสริมในหน้าตัด"""
     bar_positions = []
     if nb > 0:
         x_coords_b = np.linspace(d_prime, b - d_prime, nb)
-        for x in x_coords_b: bar_positions.extend([(x, d_prime), (x, h - d_prime)])
+        for x in x_coords_b:
+            bar_positions.extend([(x, d_prime), (x, h - d_prime)])
     if nh > 2:
         y_coords_h = np.linspace(d_prime, h - d_prime, nh)[1:-1]
-        for y in y_coords_h: bar_positions.extend([(d_prime, y), (b - d_prime, y)])
+        for y in y_coords_h:
+            bar_positions.extend([(d_prime, y), (b - d_prime, y)])
     return sorted(list(set(bar_positions)))
 
 def get_layers_from_positions(steel_positions, axis):
+    """จัดกลุ่มเหล็กเสริมตามเลเยอร์สำหรับการคำนวณ"""
     layers, coord_index = {}, 1 if axis == 'X' else 0
     for pos in steel_positions:
         layer_pos = pos[coord_index]
@@ -23,6 +27,7 @@ def get_layers_from_positions(steel_positions, axis):
     return layers
 
 def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='Tied'):
+    """คำนวณหาค่า Pn, Mn สำหรับ Interaction Diagram พร้อมการจำกัดค่าตาม ACI"""
     Es, epsilon_c_max = 2.0e6, 0.003
     epsilon_y = fy / Es
     beta1 = np.interp(fc, [0, 280, 560, np.inf], [0.85, 0.85, 0.65, 0.65])
@@ -40,7 +45,7 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='T
     Pn_nom_list.append(Pn_pc); Mn_nom_list.append(0.0)
     Pn_design_list.append(Pn_pc * phi_comp); Mn_design_list.append(0.0)
     
-    for c in np.logspace(np.log10(0.01), np.log10(h * 5), 300):
+    for c in np.logspace(np.log10(d_t / 100), np.log10(h * 5), 300):
         a = beta1 * c
         if a > h: a = h
         Cc = 0.85 * fc * a * b
@@ -50,7 +55,8 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='T
         for i, d_i in enumerate(steel_pos):
             epsilon_s = epsilon_c_max * (c - d_i) / c
             fs = np.clip(Es * epsilon_s, -fy, fy)
-            force = fs * steel_areas[i] - (0.85 * fc * steel_areas[i] if fs >= -0.85 * fc else 0)
+            # แก้ไขการคำนวณแรงในเหล็กให้แม่นยำขึ้น
+            force = fs * steel_areas[i] - (0.85 * fc * steel_areas[i] if fs >= 0 else 0)
             Pn_s += force
             Mn_s += force * (h / 2.0 - d_i)
             
@@ -60,7 +66,8 @@ def calculate_interaction_diagram(fc, fy, b, h, layers, bar_area, column_type='T
             epsilon_t = epsilon_c_max * (d_t - c) / c if c > 0 else float('inf')
             phi_limits = (0.65, 0.90) if column_type == 'Tied' else (0.75, 0.90)
             phi = np.interp(epsilon_t, [epsilon_y, 0.005], phi_limits)
-            
+            phi = np.clip(phi, phi_limits[0], 0.90)
+
             Pn_nom_list.append(Pn); Mn_nom_list.append(Mn)
             Pn_design_list.append(Pn * phi); Mn_design_list.append(Mn * phi)
             
@@ -91,27 +98,13 @@ def get_magnified_moment_and_delta(Pu_ton, Mu_ton, Pc_ton, Cm):
     delta_ns = max(1.0, Cm / denominator)
     return delta_ns * Mu_ton, delta_ns
 
-# <<<---!!! ฟังก์ชันใหม่สำหรับคำนวณ Cm Factor !!!--->>>
 def calculate_cm_for_group(group, moment_col):
-    """คำนวณ Cm Factor สำหรับกลุ่มของข้อมูล (เสาต้นเดียวใน 1 load case)"""
-    if len(group) < 2: return 1.0  # ถ้าข้อมูลไม่ครบ 2 ปลาย ให้ใช้ค่าปลอดภัย
-    
-    # หาโมเมนต์ที่ปลายบน (max station) และปลายล่าง (min station)
+    if len(group) < 2: return 1.0
     top_moment = group.loc[group['Station'].idxmax()][moment_col]
     bot_moment = group.loc[group['Station'].idxmin()][moment_col]
-
-    # กำหนด M1, M2 ตาม ACI
-    if abs(top_moment) >= abs(bot_moment):
-        M2, M1 = top_moment, bot_moment
-    else:
-        M2, M1 = bot_moment, top_moment
-        
-    if M2 == 0: return 1.0 # ป้องกันการหารด้วยศูนย์
-
-    ratio = M1 / M2
-    Cm = 0.6 + 0.4 * ratio
-    
-    # Cm ต้องมีค่าไม่น้อยกว่า 0.4 และไม่เกิน 1.0 สำหรับกรณีนี้
+    M2, M1 = (top_moment, bot_moment) if abs(top_moment) >= abs(bot_moment) else (bot_moment, top_moment)
+    if M2 == 0: return 1.0
+    Cm = 0.6 + 0.4 * (M1 / M2)
     return max(0.4, min(Cm, 1.0))
 
 def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
@@ -126,20 +119,20 @@ def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
 # --- Streamlit User Interface ---
 st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
-# ... (UI ส่วนบนเหมือนเดิม) ...
+
 with st.sidebar:
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
     
     with st.expander("คุณสมบัติวัสดุ", expanded=True):
-        fc = st.number_input("fc' (ksc)", value=280.0)
-        fy = st.number_input("fy (ksc)", value=4000.0)
+        fc = st.number_input("fc' (ksc)", value=280.0, min_value=1.0)
+        fy = st.number_input("fy (ksc)", value=4000.0, min_value=1.0)
     with st.expander("ขนาดหน้าตัด", expanded=True):
-        b_in = st.number_input("ความกว้าง, b (cm)", value=40.0)
-        h_in = st.number_input("ความลึก, h (cm)", value=60.0)
+        b_in = st.number_input("ความกว้าง, b (cm)", value=40.0, min_value=1.0)
+        h_in = st.number_input("ความลึก, h (cm)", value=60.0, min_value=1.0)
     with st.expander("ข้อมูลเหล็กเสริม", expanded=True):
-        d_prime = st.number_input("d' (cm)", value=6.0)
+        d_prime = st.number_input("d' (cm)", value=6.0, min_value=1.0)
         bar_dia_mm = st.selectbox("ขนาดเหล็กเสริม", [12, 16, 20, 25, 28, 32], index=3)
         nb = st.number_input("จำนวนเหล็กด้าน b (บน-ล่าง)", value=5, min_value=2)
         nh = st.number_input("จำนวนเหล็กด้าน h (ข้าง)", value=3, min_value=2)
@@ -149,13 +142,10 @@ with st.sidebar:
         check_slenderness = st.checkbox("พิจารณาผลของความชะลูด")
         k_factor = st.number_input("k-factor", value=1.0, disabled=not check_slenderness)
         beta_d = st.number_input("βd", value=0.6, disabled=not check_slenderness)
-        
-        # <<<---!!! UI ใหม่สำหรับ Cm Factor !!!--->>>
-        auto_calculate_cm = st.checkbox("คำนวณ Cm Factor อัตโนมัติ", value=True, disabled=not check_slenderness, help="ต้องมีข้อมูล Station ในไฟล์ CSV")
+        auto_calculate_cm = st.checkbox("คำนวณ Cm Factor อัตโนมัติ", value=True, disabled=not check_slenderness)
         if not auto_calculate_cm:
             Cm_factor_manual = st.number_input("Cm Factor (Manual)", value=1.0, disabled=not check_slenderness)
 
-    # ... (ส่วนจัดการไฟล์ CSV เหมือนเดิม) ...
     st.markdown("---"); st.header("ตรวจสอบแรงจากไฟล์ CSV")
     uploaded_file = st.file_uploader("อัปโหลดไฟล์ CSV", type=["csv"])
     if 'selected_columns' not in st.session_state: st.session_state.selected_columns = []
@@ -166,10 +156,8 @@ with st.sidebar:
             df_loads = pd.read_csv(uploaded_file)
             required_cols = {'Story', 'Column', 'Unique Name', 'Output Case', 'Station', 'P', 'M2', 'M3'}
             if not required_cols.issubset(df_loads.columns):
-                st.sidebar.error(f"ไฟล์ CSV ต้องมีคอลัมน์: {', '.join(required_cols)}")
-                df_loads = None
+                st.sidebar.error(f"ไฟล์ CSV ขาดคอลัมน์ที่จำเป็น"); df_loads = None
             else:
-                # ... (ส่วนเลือกเสาและชั้น เหมือนเดิม) ...
                 column_options = sorted(df_loads['Column'].unique())
                 st.write("**เลือกเสา:**"); c1, c2 = st.columns(2)
                 if c1.button("เลือกทั้งหมด", key='sc'): st.session_state.selected_columns = column_options
@@ -190,7 +178,6 @@ with st.sidebar:
         except Exception as e: st.sidebar.error(f"เกิดข้อผิดพลาด: {e}")
 
 # --- Main App Logic ---
-# ... (ส่วนเตรียมข้อมูลเหมือนเดิม) ...
 steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
 bar_area = np.pi * (bar_dia_mm / 10.0 / 2)**2
 Ast_total = len(steel_positions) * bar_area
@@ -211,7 +198,9 @@ with col1:
 
 with col2:
     st.header(f"Interaction Diagram (แกน {axis_label})")
-    # ... (ส่วน Expander สูตร เหมือนเดิม) ...
+    with st.expander("แสดง/ซ่อนสูตรการคำนวณความชะลูด"):
+        st.markdown(r"""...สูตรต่างๆ...""")
+
     Pn_nom, Mn_nom, Pn_design, Mn_design, phi_Pn_max = calculate_interaction_diagram(fc, fy, calc_b, calc_h, layers, bar_area, 'Tied' if 'Tied' in column_type else 'Spiral')
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=Mn_nom, y=Pn_nom, mode='lines', name='Nominal Strength', line=dict(color='blue', dash='dash')))
@@ -224,26 +213,32 @@ with col2:
         if not column_data.empty:
             column_data['P_ton'] = -column_data['P']
             column_data['Mu_ton_m'] = abs(column_data[M_col])
-            fig.add_trace(go.Scatter(x=column_data['Mu_ton_m'], y=column_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+column_data['Column']+' S:'+column_data['Story']+' Case:'+column_data['Output Case'], hoverinfo='x+y+text'))
+            
+            # ใช้ข้อมูลเฉพาะที่ปลายเสา (max station) สำหรับพล็อตกราฟและแสดงผล
+            idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
+            plot_data = column_data.loc[idx]
+            fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_data['Output Case'], hoverinfo='x+y+text'))
 
             if check_slenderness and story_lu_editor is not None:
                 story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
-                story_pc_map = {story: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, lu) for story, lu in story_lu_map.items()}
-                column_data['Pc_ton'] = column_data['Story'].map(story_pc_map)
+                column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
+                column_data['Pc_ton'] = column_data.apply(lambda row: calculate_euler_load(fc, calc_b, calc_h, beta_d, k_factor, row['Lu_m']), axis=1)
                 
-                # <<<---!!! Logic ใหม่สำหรับจัดการ Cm Factor !!!--->>>
+                # <<<---!!! จุดที่แก้ไข: เปลี่ยนมาใช้ apply + merge !!!--->>>
+                grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
                 if auto_calculate_cm:
-                    grouping_keys = ['Story', 'Column', 'Unique Name', 'Output Case']
-                    # ใช้ transform เพื่อคำนวณ Cm และขยายค่ากลับไปให้ทุกแถวในกลุ่มเดียวกัน
-                    column_data['Cm'] = column_data.groupby(grouping_keys).transform(calculate_cm_for_group, M_col)
+                    cm_series = column_data.groupby(grouping_keys).apply(calculate_cm_for_group, M_col).rename('Cm')
+                    column_data = pd.merge(column_data, cm_series, on=grouping_keys, how='left')
                 else:
                     column_data['Cm'] = Cm_factor_manual
 
-                results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
+                results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], abs(row[M_col]), row['Pc_ton'], row['Cm']), axis=1)
                 column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
-                fig.add_trace(go.Scatter(x=column_data['Mc_ton_m'], y=column_data['P_ton'], mode='markers', name='Magnified Loads', marker=dict(color='purple', size=10, symbol='x'), text='C:'+column_data['Column']+' S:'+column_data['Story']+' δns='+column_data['delta_ns'].round(2).astype(str), hoverinfo='x+y+text'))
+                
+                plot_data = column_data.loc[idx]
+                fig.add_trace(go.Scatter(x=plot_data['Mc_ton_m'], y=plot_data['P_ton'], mode='markers', name='Magnified Loads', marker=dict(color='purple', size=10, symbol='x'), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' δns='+plot_data['delta_ns'].round(2).astype(str), hoverinfo='x+y+text'))
 
-                failing_loads = column_data[column_data['delta_ns'] > 1.4]
+                failing_loads = plot_data[plot_data['delta_ns'] > 1.4]
                 if not failing_loads.empty:
                     st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} รายการที่ Delta_ns > 1.4")
                     st.dataframe(failing_loads[['Story', 'Column', 'Output Case', 'delta_ns']].round(2))
@@ -253,9 +248,12 @@ with col2:
     fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
     st.plotly_chart(fig, use_container_width=True)
 
-    if df_loads is not None and st.session_state.selected_columns and st.session_state.selected_stories:
-        st.write("ข้อมูลแรงสำหรับเสาที่เลือก")
-        display_cols = ['Story', 'Column', 'Unique Name', 'Station', 'Output Case', 'P', M_col]
-        if check_slenderness and 'Mc_ton_m' in column_data.columns:
-            display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
-        st.dataframe(column_data[display_cols].reset_index(drop=True).round(2))
+    if df_loads is not None and 'plot_data' in locals() and not plot_data.empty:
+        st.write("ข้อมูลแรงสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
+        # สร้าง Dataframe สำหรับแสดงผลจากข้อมูลที่คำนวณครบถ้วนแล้ว
+        display_data = column_data.loc[idx].copy()
+        display_cols = ['Story', 'Column', 'Unique Name', 'Output Case', 'P', M_col]
+        if check_slenderness and 'Mc_ton_m' in display_data.columns:
+            display_data[f'{M_col}_magnified'] = display_data['Mc_ton_m']
+            display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', f'{M_col}_magnified'])
+        st.dataframe(display_data[display_cols].reset_index(drop=True).round(2))
