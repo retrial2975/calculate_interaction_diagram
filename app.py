@@ -356,7 +356,7 @@ with col2:
     
     fig_diagram.update_layout(height=700, xaxis_title="Moment, M (Ton-m)", yaxis_title="Axial Load, P (Ton)",
                               legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99))
-    fig_diagram.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray', range=[0, max(Mn_design.max(), 1)*1.1])
+    fig_diagram.update_xaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
     fig_diagram.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
     st.plotly_chart(fig_diagram, use_container_width=True)
 
