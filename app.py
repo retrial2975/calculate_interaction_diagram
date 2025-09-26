@@ -120,7 +120,6 @@ st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 
 with st.sidebar:
-    # ... (ส่วน UI ทั้งหมดเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -214,7 +213,6 @@ with col2:
             column_data['P_ton'] = -column_data['P']
             column_data['Mu_ton_m'] = abs(column_data[M_col])
             
-            # <<<---!!! จุดที่แก้ไข 1: ย้ายการคำนวณทั้งหมดมาก่อน แล้วค่อยหา idx ทีหลัง !!!--->>>
             if check_slenderness and story_lu_editor is not None:
                 story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
                 column_data['Lu_m'] = column_data['Story'].map(story_lu_map)
@@ -230,12 +228,12 @@ with col2:
                 results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], abs(row[M_col]), row['Pc_ton'], row['Cm']), axis=1)
                 column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
             
-            # <<<---!!! จุดที่แก้ไข 2: หา idx หลังจากจัดการข้อมูลทั้งหมดเสร็จแล้ว !!!--->>>
             idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
             plot_data = column_data.loc[idx]
 
-            # พล็อตกราฟโดยใช้ plot_data ที่สมบูรณ์แล้ว
-            fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_gata['Output Case'], hoverinfo='x+y+text'))
+            # <<<---!!! จุดที่แก้ไข !!!--->>>
+            fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_data['Output Case'], hoverinfo='x+y+text'))
+            
             if check_slenderness and 'Mc_ton_m' in plot_data.columns:
                 fig.add_trace(go.Scatter(x=plot_data['Mc_ton_m'], y=plot_data['P_ton'], mode='markers', name='Magnified Loads', marker=dict(color='purple', size=10, symbol='x'), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' δns='+plot_data['delta_ns'].round(2).astype(str), hoverinfo='x+y+text'))
                 
@@ -254,6 +252,6 @@ with col2:
         display_data = plot_data
         display_cols = ['Story', 'Column', 'Unique Name', 'Output Case', 'P', M_col]
         if check_slenderness and 'Mc_ton_m' in display_data.columns:
-            display_data[f'{M_col}_magnified'] = display_data['Mc_ton_m']
+            display_data.loc[:, f'{M_col}_magnified'] = display_data['Mc_ton_m']
             display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', f'{M_col}_magnified'])
         st.dataframe(display_data[display_cols].reset_index(drop=True).round(2))
