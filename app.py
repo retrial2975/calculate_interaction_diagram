@@ -106,16 +106,10 @@ def calculate_cm_for_group(group, moment_col):
     Cm = 0.6 + 0.4 * (M1 / M2)
     return max(0.4, min(Cm, 1.0))
 
-# <<<---!!! ฟังก์ชันใหม่สำหรับคำนวณ Minimum Moment !!!--->>>
 def calculate_minimum_moment(Pu_ton, h_cm):
-    """คำนวณ Minimum Moment ตาม ACI (หน่วยเป็น Ton-m)"""
-    if Pu_ton <= 0: return 0.0 # ไม่มีโมเมนต์ขั้นต่ำสำหรับแรงดึง
-    
+    if Pu_ton <= 0: return 0.0
     Pu_kg = abs(Pu_ton) * 1000
-    # สูตร M_min = Pu * (1.5 + 0.03*h) ให้ผลลัพธ์เป็น kg-cm
     M_min_kg_cm = Pu_kg * (1.5 + 0.03 * h_cm)
-    
-    # แปลงหน่วยกลับเป็น Ton-m
     return M_min_kg_cm / 100000
 
 def draw_column_section_plotly(b, h, steel_positions, bar_dia_mm):
@@ -132,7 +126,6 @@ st.set_page_config(layout="wide")
 st.title("🏗️ Column Interaction Diagram Generator (ACI Compliant)")
 
 with st.sidebar:
-    # ... (UI ส่วนบนเหมือนเดิม) ...
     st.header("ใส่ข้อมูลหน้าตัดเสา")
     column_type = st.radio("ประเภทเหล็กปลอก:", ('เหล็กปลอกเดี่ยว (Tied)', 'เหล็กปลอกเกลียว (Spiral)'))
     bending_axis = st.radio("เลือกแกนคำนวณโมเมนต์:", ('X (Strong Axis)', 'Y (Weak Axis)'))
@@ -157,12 +150,8 @@ with st.sidebar:
         auto_calculate_cm = st.checkbox("คำนวณ Cm Factor อัตโนมัติ", value=True, disabled=not check_slenderness)
         if not auto_calculate_cm:
             Cm_factor_manual = st.number_input("Cm Factor (Manual)", value=1.0, disabled=not check_slenderness)
-        
-        # <<<---!!! UI ใหม่สำหรับ Minimum Moment !!!--->>>
         check_min_moment = st.checkbox("พิจารณา Minimum Moment ตาม ACI", value=True)
 
-
-    # ... (ส่วนจัดการไฟล์ CSV เหมือนเดิม) ...
     st.markdown("---"); st.header("ตรวจสอบแรงจากไฟล์ CSV")
     uploaded_file = st.file_uploader("อัปโหลดไฟล์ CSV", type=["csv"])
     if 'selected_columns' not in st.session_state: st.session_state.selected_columns = []
@@ -193,7 +182,6 @@ with st.sidebar:
                         story_lu_df = pd.DataFrame({'Story': sorted(selected_stories), 'Lu (m)': [3.0] * len(selected_stories)})
                         story_lu_editor = st.data_editor(story_lu_df, use_container_width=True, hide_index=True)
         except Exception as e: st.sidebar.error(f"เกิดข้อผิดพลาด: {e}")
-
 
 # --- Main App Logic ---
 steel_positions = generate_steel_positions(b_in, h_in, nb, nh, d_prime)
@@ -229,9 +217,7 @@ with col2:
             column_data['P_ton'] = -column_data['P']
             column_data['Mu_ton_m'] = abs(column_data[M_col])
             
-            # --- คำนวณค่าต่างๆ ---
-            # เริ่มต้นให้ Mc เท่ากับ Mu
-            column_data['Mc_ton_m'] = column_data['Mu_ton_m']
+            column_data['Mc_ton_m'] = column_data['Mu_ton_m'] # Default value if slenderness is not checked
 
             if check_slenderness and story_lu_editor is not None:
                 story_lu_map = pd.Series(story_lu_editor['Lu (m)'].values, index=story_lu_editor['Story']).to_dict()
@@ -248,27 +234,25 @@ with col2:
                 results = column_data.apply(lambda row: get_magnified_moment_and_delta(row['P_ton'], row['Mu_ton_m'], row['Pc_ton'], row['Cm']), axis=1)
                 column_data[['Mc_ton_m', 'delta_ns']] = pd.DataFrame(results.tolist(), index=column_data.index)
             
-            # <<<---!!! Logic ใหม่สำหรับคำนวณและเปรียบเทียบ Minimum Moment !!!--->>>
-            column_data['M_design_ton_m'] = column_data['Mc_ton_m'] # เริ่มต้นให้ M_design เท่ากับ Mc
+            column_data['M_design_ton_m'] = column_data['Mc_ton_m']
             if check_min_moment:
                 column_data['M_min_ton_m'] = column_data.apply(lambda row: calculate_minimum_moment(row['P_ton'], calc_h), axis=1)
                 column_data['M_design_ton_m'] = column_data[['Mc_ton_m', 'M_min_ton_m']].max(axis=1)
 
-            # --- จัดการข้อมูลสำหรับพล็อต ---
+            # <<<---!!! จุดที่แก้ไข 1: พล็อตจาก column_data ทั้งหมด ไม่ใช่แค่ plot_data !!!--->>>
+            fig.add_trace(go.Scatter(x=column_data['Mu_ton_m'], y=column_data['P_ton'], mode='markers', name='Original Loads (All Stations)', marker=dict(color='green', size=8, opacity=0.5), text='C:'+column_data['Column']+' S:'+column_data['Story']+' Case:'+column_data['Output Case'], hoverinfo='x+y+text'))
+            
+            final_moment_col_name = 'M_design_ton_m'
+            fig.add_trace(go.Scatter(x=column_data[final_moment_col_name], y=column_data['P_ton'], mode='markers', name='Final Design Loads (All Stations)', marker=dict(color='purple', size=8, symbol='x', opacity=0.5), text='C:'+column_data['Column']+' S:'+column_data['Story']+' M_final='+column_data[final_moment_col_name].round(2).astype(str), hoverinfo='x+y+text'))
+            
+            # --- สร้างข้อมูลสำหรับสรุป (ตาราง, warning) โดยใช้เฉพาะปลายบน ---
             idx = column_data.groupby(['Story', 'Column', 'Unique Name', 'Output Case'])['Station'].idxmax()
-            plot_data = column_data.loc[idx]
+            summary_data = column_data.loc[idx]
 
-            # พล็อต Original Loads
-            fig.add_trace(go.Scatter(x=plot_data['Mu_ton_m'], y=plot_data['P_ton'], mode='markers', name='Original Loads (Mu)', marker=dict(color='green', size=8), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' Case:'+plot_data['Output Case'], hoverinfo='x+y+text'))
-            
-            # พล็อต Final Design Loads
-            final_moment_col_name = 'M_design_ton_m' if check_min_moment else 'Mc_ton_m'
-            fig.add_trace(go.Scatter(x=plot_data[final_moment_col_name], y=plot_data['P_ton'], mode='markers', name='Final Design Loads', marker=dict(color='purple', size=10, symbol='x'), text='C:'+plot_data['Column']+' S:'+plot_data['Story']+' M_final='+plot_data[final_moment_col_name].round(2).astype(str), hoverinfo='x+y+text'))
-            
-            if check_slenderness and 'delta_ns' in plot_data.columns:
-                failing_loads = plot_data[plot_data['delta_ns'] > 1.4]
+            if check_slenderness and 'delta_ns' in summary_data.columns:
+                failing_loads = summary_data[summary_data['delta_ns'] > 1.4]
                 if not failing_loads.empty:
-                    st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} รายการที่ Delta_ns > 1.4")
+                    st.warning(f"⚠️ คำเตือน: พบ {len(failing_loads)} รายการที่ Delta_ns > 1.4 (ที่ปลายบน)")
                     st.dataframe(failing_loads[['Story', 'Column', 'Output Case', 'delta_ns']].round(2))
 
     fig.update_layout(height=700, xaxis_title="Moment, M (Ton-m)", yaxis_title="Axial Load, P (Ton)", legend=dict(y=0.99, x=0.99))
@@ -276,14 +260,12 @@ with col2:
     fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor='LightGray')
     st.plotly_chart(fig, use_container_width=True)
 
-    if df_loads is not None and 'plot_data' in locals() and not plot_data.empty:
-        st.write("ข้อมูลแรงสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
-        display_data = plot_data.copy()
+    if df_loads is not None and 'summary_data' in locals() and not summary_data.empty:
+        st.write("ข้อมูลสรุปสำหรับเสาที่เลือก (แสดงค่าที่ปลายบนของเสา)")
+        display_data = summary_data.copy()
         display_cols = ['Story', 'Column', 'Unique Name', 'Output Case', 'P', M_col, 'Mu_ton_m']
         
-        if check_slenderness and 'Mc_ton_m' in display_data.columns:
-            display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
-        if check_min_moment and 'M_min_ton_m' in display_data.columns:
-             display_cols.extend(['M_min_ton_m', 'M_design_ton_m'])
-
+        if 'Mc_ton_m' in display_data.columns: display_cols.extend(['Cm', 'Pc_ton', 'delta_ns', 'Mc_ton_m'])
+        if 'M_min_ton_m' in display_data.columns: display_cols.extend(['M_min_ton_m', 'M_design_ton_m'])
+        
         st.dataframe(display_data[display_cols].reset_index(drop=True).round(2))
